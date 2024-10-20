@@ -52,6 +52,7 @@ type mapper struct {
 	rowPostProcessors []RowPostProcessor
 	rowSubQueries     []SubQuery
 	defaultQuery      *Query
+	subQuery          *SubQuery
 }
 
 func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) ([]map[string]any, error) {
@@ -128,6 +129,9 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 	if m.defaultQuery != nil {
 		querySet = true
 		query = string(*m.defaultQuery)
+	} else if m.subQuery != nil {
+		querySet = true
+		query = m.subQuery.Query
 	}
 	for _, o := range options {
 		if o != nil {
@@ -166,7 +170,7 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 
 func (m *mapper) mapRow(rows *sql.Rows, addMappings Mappings, addPostProcesses []RowPostProcessor, addSubQueries []SubQuery, exclusions ExcludeProperties) (map[string]any, error) {
 	//TODO implement me
-	panic("implement me")
+	return map[string]any{}, nil
 }
 
 func (m *mapper) addOptions(options ...any) error {
