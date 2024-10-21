@@ -1,9 +1,14 @@
 package columbus
 
 import (
+	"context"
+	"errors"
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
+
+var ctx = context.Background()
 
 func TestNewMapper(t *testing.T) {
 	m, err := NewMapper("a,b,c", nil)
@@ -38,13 +43,8 @@ func TestNewMapper_WithOptions(t *testing.T) {
 	mt := m.(*mapper)
 	require.Equal(t, 1, len(mt.rowPostProcessors))
 
-	sq := SubQuery{}
+	sq := NewSubQuery("", "", nil, nil, false)
 	m, err = NewMapper("a,b,c", nil, sq)
-	require.NoError(t, err)
-	mt = m.(*mapper)
-	require.Equal(t, 1, len(mt.rowSubQueries))
-
-	m, err = NewMapper("a,b,c", nil, &sq)
 	require.NoError(t, err)
 	mt = m.(*mapper)
 	require.Equal(t, 1, len(mt.rowSubQueries))
@@ -58,6 +58,15 @@ func TestNewMapper_WithOptions(t *testing.T) {
 	_, err = NewMapper("a,b,c", nil, "not a valid option")
 	require.Error(t, err)
 	require.Equal(t, "unknown option type: string", err.Error())
+}
+
+func TestNewMapper_WithOptions_ErrorsWithMultipleDefaultQueries(t *testing.T) {
+	q := Query(`FROM table WHERE id = ?`)
+	_, err := NewMapper("a,b,c", nil, q)
+	require.NoError(t, err)
+	_, err = NewMapper("a,b,c", nil, q, q)
+	require.Error(t, err)
+	require.Equal(t, "cannot use multiple default queries", err.Error())
 }
 
 func TestMapper_rowMapOptions_query(t *testing.T) {
@@ -138,11 +147,9 @@ func TestMapper_rowMapOptions_subQueries(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, subQueries)
 
-	_, _, _, subQueries, _, err = m.rowMapOptions(SubQuery{})
-	require.NoError(t, err)
-	require.Equal(t, 1, len(subQueries))
-
-	_, _, _, subQueries, _, err = m.rowMapOptions(SubQuery{}, &SubQuery{})
+	sq1 := NewSubQuery("", "", nil, nil, false)
+	sq2 := NewObjectSubQuery("", "", nil, nil, false, true)
+	_, _, _, subQueries, _, err = m.rowMapOptions(sq1, sq2)
 	require.NoError(t, err)
 	require.Equal(t, 2, len(subQueries))
 }
@@ -162,4 +169,82 @@ func TestMapper_rowMapOptions_excludeProperties(t *testing.T) {
 	_, _, _, _, exclusions, err = m.rowMapOptions(ExcludeProperties{"a": nil}, ExcludeProperties{"b": nil})
 	require.NoError(t, err)
 	require.Equal(t, 2, len(exclusions))
+}
+
+func TestMapper_Rows_SqlErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("foo"))
+
+	_, err = m.Rows(ctx, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_FirstRow_SqlErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("foo"))
+
+	_, err = m.FirstRow(ctx, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_ExactlyOneRow_SqlErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("foo"))
+
+	_, err = m.ExactlyOneRow(ctx, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_Rows_OptionsErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	require.NoError(t, err)
+
+	_, err = m.Rows(ctx, nil, nil, "not a valid option")
+	require.Error(t, err)
+	require.Equal(t, "unknown option type: string", err.Error())
+}
+
+func TestMapper_FirstRow_OptionsErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	require.NoError(t, err)
+
+	_, err = m.FirstRow(ctx, nil, nil, "not a valid option")
+	require.Error(t, err)
+	require.Equal(t, "unknown option type: string", err.Error())
+}
+
+func TestMapper_ExactlyOneRow_OptionsErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	require.NoError(t, err)
+
+	_, err = m.ExactlyOneRow(ctx, nil, nil, "not a valid option")
+	require.Error(t, err)
+	require.Equal(t, "unknown option type: string", err.Error())
 }

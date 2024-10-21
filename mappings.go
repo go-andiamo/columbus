@@ -6,7 +6,7 @@ type PostProcess func(ctx context.Context, sqli SqlInterface, row map[string]any
 
 type Mapping struct {
 	PostProcess PostProcess
-	SubQuery    *SubQuery
+	SubQuery    SubQuery
 }
 
 type Mappings map[string]Mapping
