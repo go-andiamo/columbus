@@ -48,14 +48,16 @@ func newMapper(cols any, mappings Mappings, options ...any) (*mapper, error) {
 type mapper struct {
 	mutex             sync.RWMutex
 	cols              string
+	columnsInfo       *columnsInfo
 	mappings          Mappings
 	rowPostProcessors []RowPostProcessor
 	rowSubQueries     []SubQuery
 	defaultQuery      *Query
-	subQuery          *subQuery
+	// subQuery is set by parent sub-query
+	subQuery SubQuery
 }
 
-func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) ([]map[string]any, error) {
+func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result []map[string]any, err error) {
 	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
 	if err != nil {
 		return nil, err
@@ -67,40 +69,22 @@ func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, option
 	defer func() {
 		_ = rows.Close()
 	}()
-	result := make([]map[string]any, 0)
-	for rows.Next() {
-		if r, err := m.mapRow(rows, mappings, postProcesses, subQueries, exclusions); err == nil {
-			result = append(result, r)
-		} else {
-			return nil, err
+	var colsReader *columnsReader
+	if colsReader, err = m.mapColumns(rows); err == nil {
+		result = make([]map[string]any, 0)
+		var row map[string]any
+		for rows.Next() {
+			if row, err = m.mapRow(rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
+				result = append(result, row)
+			} else {
+				return nil, err
+			}
 		}
 	}
-	return result, nil
+	return result, err
 }
 
-func (m *mapper) FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error) {
-	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := sqli.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = rows.Close()
-	}()
-	if rows.Next() {
-		if r, err := m.mapRow(rows, mappings, postProcesses, subQueries, exclusions); err == nil {
-			return r, nil
-		} else {
-			return nil, err
-		}
-	}
-	return nil, nil
-}
-
-func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error) {
+func (m *mapper) FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result map[string]any, err error) {
 	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
 	if err != nil {
 		return nil, err
@@ -113,17 +97,39 @@ func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []an
 		_ = rows.Close()
 	}()
 	if rows.Next() {
-		if r, err := m.mapRow(rows, mappings, postProcesses, subQueries, exclusions); err == nil {
-			return r, nil
-		} else {
-			return nil, err
+		var colsReader *columnsReader
+		if colsReader, err = m.mapColumns(rows); err == nil {
+			result, err = m.mapRow(rows, colsReader, mappings, postProcesses, subQueries, exclusions)
 		}
 	}
-	return nil, sql.ErrNoRows
+	return result, err
+}
+
+func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result map[string]any, err error) {
+	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := sqli.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	err = sql.ErrNoRows
+	if rows.Next() {
+		var colsReader *columnsReader
+		if colsReader, err = m.mapColumns(rows); err == nil {
+			result, err = m.mapRow(rows, colsReader, mappings, postProcesses, subQueries, exclusions)
+		}
+	}
+	return result, err
 }
 
 func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusions, err error) {
-	mappings = Mappings{}
+	mappings = m.mappings
+	mappingsCopied := false
 	exclusions = make([]PropertyExclusions, 0)
 	querySet := false
 	if m.defaultQuery != nil {
@@ -131,7 +137,7 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 		query = string(*m.defaultQuery)
 	} else if m.subQuery != nil {
 		querySet = true
-		query = m.subQuery.query
+		query = m.subQuery.Query()
 	}
 	for _, o := range options {
 		if o != nil {
@@ -146,6 +152,10 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 				}
 				query += " " + string(option)
 			case Mappings:
+				if !mappingsCopied {
+					mappingsCopied = true
+					mappings = m.copyMappings()
+				}
 				for k, v := range option {
 					mappings[k] = v
 				}
@@ -166,9 +176,12 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 	return query, mappings, postProcesses, subQueries, exclusions, err
 }
 
-func (m *mapper) mapRow(rows *sql.Rows, addMappings Mappings, addPostProcesses []RowPostProcessor, addSubQueries []SubQuery, exclusions []PropertyExclusions) (map[string]any, error) {
-	//TODO implement me
-	return map[string]any{}, nil
+func (m *mapper) copyMappings() Mappings {
+	result := make(Mappings, len(m.mappings))
+	for k, v := range m.mappings {
+		result[k] = v
+	}
+	return result
 }
 
 func (m *mapper) addOptions(options ...any) error {
@@ -191,4 +204,27 @@ func (m *mapper) addOptions(options ...any) error {
 		}
 	}
 	return nil
+}
+
+func (m *mapper) mapColumns(rows *sql.Rows) (cr *columnsReader, err error) {
+	m.mutex.RLock()
+	if m.columnsInfo != nil {
+		m.mutex.RUnlock()
+		return m.columnsInfo.reader(), nil
+	}
+	m.mutex.RUnlock()
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.columnsInfo, err = newColumnsInfo(rows)
+	return m.columnsInfo.reader(), err
+}
+
+func (m *mapper) mapRow(rows *sql.Rows, cols *columnsReader, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusions) (row map[string]any, err error) {
+	if err = rows.Scan(cols.scanArgs...); err == nil {
+		row = make(map[string]any, cols.count)
+		for i, n := range cols.names {
+			row[n] = cols.values[i]
+		}
+	}
+	return row, err
 }

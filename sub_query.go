@@ -3,82 +3,163 @@ package columbus
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 type SubQuery interface {
 	Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error
+	Query() string
 }
 
-var _ SubQuery = &subQuery{}
-
+// NewSubQuery creates a new sub-query that creates an array property in the mapped row
 func NewSubQuery(propertyName string, query string, argColumns []string, mappings Mappings, emptyNil bool) SubQuery {
-	return &subQuery{
+	return &sliceSubQuery{subQuery{
 		propertyName: propertyName,
 		query:        query,
 		argColumns:   argColumns,
 		mappings:     mappings,
 		emptyNil:     emptyNil,
-	}
+	}}
 }
 
+// NewObjectSubQuery creates a new sub-query that creates an object property in the mapped row
 func NewObjectSubQuery(propertyName string, query string, argColumns []string, mappings Mappings, emptyNil bool, errNoRow bool) SubQuery {
-	return &subQuery{
+	if errNoRow {
+		return &exactObjectSubQuery{subQuery{
+			propertyName: propertyName,
+			query:        query,
+			argColumns:   argColumns,
+			mappings:     mappings,
+		}}
+	}
+	return &objectSubQuery{subQuery{
 		propertyName: propertyName,
 		query:        query,
 		argColumns:   argColumns,
 		mappings:     mappings,
-		asObject:     true,
 		emptyNil:     emptyNil,
-		errNoRow:     !emptyNil && errNoRow,
-	}
+	}}
+}
+
+// NewMergeSubQuery creates a new sub-query that reads an object for the mapped row and merges the properties from
+// that object into the mapped row
+func NewMergeSubQuery(query string, argColumns []string, mappings Mappings, noOverwrite bool) SubQuery {
+	return &mergeSubQuery{
+		noOverwrite: noOverwrite,
+		subQuery: subQuery{
+			query:      query,
+			argColumns: argColumns,
+			mappings:   mappings,
+		}}
 }
 
 type subQuery struct {
+	mutex  sync.RWMutex
+	mapper *mapper
 	// propertyName is the property name to use in the row object
 	propertyName string
 	// query is the SQL query to use - it should contain the same number of '?' arg markers as the length of argColumns
 	query string
 	// argColumns is the columns to use as args for the sub-query
 	argColumns []string
-	// asObject indicates the result of the query is placed into the row object as an object
-	// (as opposed to a slice/json array)
-	asObject bool
-	// errNotFound indicates that, when retrieving as an object, should error when sub-query finds no rows
-	errNoRow bool
 	// emptyNil indicates if the result is empty then the resultant property is nil
 	emptyNil bool
 	// mappings is any column mappings used by the sub-query
 	mappings Mappings
 }
 
-func (sq *subQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
-	rm, _ := newMapper(nil, sq.mappings)
-	rm.subQuery = sq
+func (sq *subQuery) Query() string {
+	return sq.query
+}
+
+type sliceSubQuery struct {
+	subQuery
+}
+
+var _ SubQuery = &sliceSubQuery{}
+
+func (sq *sliceSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+	rm := sq.rowMapper(sq)
 	args, err := sq.getArgs(row)
 	if err != nil {
 		return err
 	}
-	if sq.asObject && sq.errNoRow {
-		if obj, err := rm.ExactlyOneRow(ctx, sqli, args); err != nil {
-			return err
-		} else {
-			row[sq.propertyName] = obj
-		}
-	} else if sq.asObject {
-		if obj, err := rm.FirstRow(ctx, sqli, args); err != nil {
-			return err
-		} else if sq.emptyNil && (obj == nil || len(obj) == 0) {
-			row[sq.propertyName] = nil
-		} else {
-			row[sq.propertyName] = obj
+	if rows, err := rm.Rows(ctx, sqli, args); err != nil {
+		return err
+	} else if sq.emptyNil && (rows == nil || len(rows) == 0) {
+		row[sq.propertyName] = nil
+	} else {
+		row[sq.propertyName] = rows
+	}
+	return nil
+}
+
+type objectSubQuery struct {
+	subQuery
+}
+
+var _ SubQuery = &objectSubQuery{}
+
+func (sq *objectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+	rm := sq.rowMapper(sq)
+	args, err := sq.getArgs(row)
+	if err != nil {
+		return err
+	}
+	if obj, err := rm.FirstRow(ctx, sqli, args); err != nil {
+		return err
+	} else if sq.emptyNil && (obj == nil || len(obj) == 0) {
+		row[sq.propertyName] = nil
+	} else {
+		row[sq.propertyName] = obj
+	}
+	return nil
+}
+
+type exactObjectSubQuery struct {
+	subQuery
+}
+
+var _ SubQuery = &exactObjectSubQuery{}
+
+func (sq *exactObjectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+	rm := sq.rowMapper(sq)
+	args, err := sq.getArgs(row)
+	if err != nil {
+		return err
+	}
+	if obj, err := rm.ExactlyOneRow(ctx, sqli, args); err != nil {
+		return err
+	} else {
+		row[sq.propertyName] = obj
+	}
+	return nil
+}
+
+type mergeSubQuery struct {
+	noOverwrite bool
+	subQuery
+}
+
+var _ SubQuery = &mergeSubQuery{}
+
+func (sq *mergeSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+	rm := sq.rowMapper(sq)
+	args, err := sq.getArgs(row)
+	if err != nil {
+		return err
+	}
+	if obj, err := rm.FirstRow(ctx, sqli, args); err != nil {
+		return err
+	} else if sq.noOverwrite {
+		for k, v := range obj {
+			if _, ok := row[k]; !ok {
+				row[k] = v
+			}
 		}
 	} else {
-		if rows, err := rm.Rows(ctx, sqli, args); err != nil {
-			return err
-		} else if sq.emptyNil && (rows == nil || len(rows) == 0) {
-			row[sq.propertyName] = nil
-		} else {
-			row[sq.propertyName] = rows
+		for k, v := range obj {
+			row[k] = v
 		}
 	}
 	return nil
@@ -94,4 +175,18 @@ func (sq *subQuery) getArgs(row map[string]any) ([]any, error) {
 		}
 	}
 	return result, nil
+}
+
+func (sq *subQuery) rowMapper(asq SubQuery) *mapper {
+	sq.mutex.RLock()
+	if sq.mapper != nil {
+		sq.mutex.RUnlock()
+		return sq.mapper
+	}
+	sq.mutex.RUnlock()
+	sq.mutex.Lock()
+	defer sq.mutex.Unlock()
+	sq.mapper, _ = newMapper(nil, sq.mappings)
+	sq.mapper.subQuery = asq
+	return sq.mapper
 }
