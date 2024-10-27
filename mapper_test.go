@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"testing"
 )
@@ -247,4 +248,29 @@ func TestMapper_ExactlyOneRow_OptionsErrors(t *testing.T) {
 	_, err = m.ExactlyOneRow(ctx, nil, nil, "not a valid option")
 	require.Error(t, err)
 	require.Equal(t, "unknown option type: string", err.Error())
+}
+
+func TestMapper_FirstRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c"}).AddRow(
+		"a value",
+		int64(16),
+		float64(16)))
+
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+
+	assert.Equal(t, "a value", row["a"])
+	assert.Equal(t, int64(16), row["b"])
+	assert.Equal(t, float64(16), row["c"])
 }
