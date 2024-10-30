@@ -30,6 +30,35 @@ func TestNewSubQuery_Execute(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestNewSubQuery_Execute_Twice(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	sq := NewSubQuery("test",
+		`SELECT * FROM test_table WHERE id = ?`,
+		[]string{"parent_id"},
+		nil, false)
+	row := map[string]any{
+		"parent_id": int64(16),
+	}
+	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
+	err = sq.Execute(ctx, db, row)
+	require.NoError(t, err)
+	require.NotNil(t, row["test"])
+	require.Equal(t, 1, len(row["test"].([]map[string]any)))
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
+	err = sq.Execute(ctx, db, row)
+	require.NoError(t, err)
+	require.NotNil(t, row["test"])
+	require.Equal(t, 1, len(row["test"].([]map[string]any)))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestNewSubQuery_Execute_NoRows(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

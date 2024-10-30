@@ -8,7 +8,7 @@ import (
 
 type SubQuery interface {
 	Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error
-	Query() string
+	getQuery() string
 }
 
 // NewSubQuery creates a new sub-query that creates an array property in the mapped row
@@ -68,7 +68,7 @@ type subQuery struct {
 	mappings Mappings
 }
 
-func (sq *subQuery) Query() string {
+func (sq *subQuery) getQuery() string {
 	return sq.query
 }
 
