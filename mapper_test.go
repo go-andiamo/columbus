@@ -107,16 +107,22 @@ func TestMapper_rowMapOptions_query(t *testing.T) {
 }
 
 func TestMapper_rowMapOptions_mappings(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Mappings{
+		"a": {
+			PropertyName: "aaa",
+		},
+	}, Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 	require.NotNil(t, m.defaultQuery)
 	_, mappings, _, _, _, err := m.rowMapOptions()
 	require.NoError(t, err)
-	require.Empty(t, mappings)
-
-	_, mappings, _, _, _, err = m.rowMapOptions(Mappings{"a": Mapping{}})
-	require.NoError(t, err)
 	require.Equal(t, 1, len(mappings))
+
+	_, mappings, _, _, _, err = m.rowMapOptions(Mappings{
+		"b": Mapping{},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, len(mappings))
 
 	_, mappings, _, _, _, err = m.rowMapOptions(Mappings{"a": Mapping{}}, Mappings{"b": Mapping{}})
 	require.NoError(t, err)
@@ -183,6 +189,29 @@ func TestMapper_Rows_SqlErrors(t *testing.T) {
 		_ = db.Close()
 	}()
 	mock.ExpectQuery("").WillReturnError(errors.New("foo"))
+
+	_, err = m.Rows(ctx, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_Rows_MapRowErrors(t *testing.T) {
+	m, err := newMapper("a", Mappings{
+		"a": {
+			PostProcess: func(ctx context.Context, sqli SqlInterface, row map[string]any, value any) (any, error) {
+				return nil, errors.New("foo")
+			},
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
 
 	_, err = m.Rows(ctx, db, nil)
 	require.Error(t, err)
@@ -273,4 +302,209 @@ func TestMapper_FirstRow(t *testing.T) {
 	assert.Equal(t, "a value", row["a"])
 	assert.Equal(t, int64(16), row["b"])
 	assert.Equal(t, float64(16), row["c"])
+}
+
+func TestMapper_FirstRow_CalledTwice(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
+	row, err = m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+	assert.Equal(t, "a value", row["a"])
+}
+
+func TestMapper_Mapping_PropertyName(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	m, err := newMapper("a", Mappings{
+		"a": {
+			PropertyName: "foo",
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
+
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+
+	assert.Equal(t, 1, len(row))
+	assert.Equal(t, "a value", row["foo"])
+}
+
+func TestMapper_Mapping_OmitNull(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	m, err := newMapper("a", Mappings{
+		"a": {
+			OmitNull: true,
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow(nil))
+
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+
+	assert.Equal(t, 0, len(row))
+}
+
+func TestMapper_Mapping_NullDefault(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	m, err := newMapper("a", Mappings{
+		"a": {
+			NullDefault: "foo",
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow(nil))
+
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+
+	assert.Equal(t, 1, len(row))
+	assert.Equal(t, "foo", row["a"])
+}
+
+func TestMapper_Mapping_Path(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	m, err := newMapper("a,b", Mappings{
+		"a": {
+			Path: []string{"x", "y"},
+		},
+		"b": {
+			Path: []string{"x", "y"},
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	mock.ExpectQuery("SELECT a,b FROM table").WillReturnRows(sqlmock.NewRows([]string{"a", "b"}).AddRow("foo", "bar"))
+
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+
+	assert.Equal(t, 1, len(row))
+	obj := row["x"].(map[string]any)
+	assert.Equal(t, 1, len(obj))
+	obj = obj["y"].(map[string]any)
+	assert.Equal(t, 2, len(obj))
+	assert.Equal(t, "foo", obj["a"])
+	assert.Equal(t, "bar", obj["b"])
+}
+
+func TestMapper_Mapping_PostProcess(t *testing.T) {
+	m, err := newMapper("a", Mappings{
+		"a": {
+			PostProcess: func(ctx context.Context, sqli SqlInterface, row map[string]any, value any) (any, error) {
+				return "replaced value", nil
+			},
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
+
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+	assert.Equal(t, "replaced value", row["a"])
+}
+
+func TestMapper_SubQuery(t *testing.T) {
+	m, err := newMapper("a", nil,
+		Query(`FROM table`),
+		NewSubQuery("foo", `SELECT b FROM sub_table WHERE a = ?`, []string{"a"}, nil, false),
+	)
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("SELECT a FROM table").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
+	mock.ExpectQuery("SELECT b FROM sub_table WHERE a = ?").WithArgs("a value").WillReturnRows(sqlmock.NewRows([]string{"b"}).AddRow("b value"))
+
+	row, err := m.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+	assert.Equal(t, 2, len(row))
+	assert.Equal(t, "a value", row["a"])
+	subs := row["foo"].([]map[string]any)
+	assert.Equal(t, 1, len(subs))
+	sub := subs[0]
+	assert.Equal(t, "b value", sub["b"])
+}
+
+func TestMapper_SubQuery_SqlErrors(t *testing.T) {
+	m, err := newMapper("a", nil,
+		Query(`FROM table`),
+		NewSubQuery("foo", `SELECT b FROM sub_table WHERE a = ?`, []string{"a"}, nil, false),
+	)
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("SELECT a FROM table").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
+	mock.ExpectQuery("SELECT b FROM sub_table WHERE a = ?").WithArgs("a value").WillReturnError(errors.New("fooey"))
+
+	_, err = m.FirstRow(ctx, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "fooey", err.Error())
 }

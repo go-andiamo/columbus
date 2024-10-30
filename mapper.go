@@ -74,7 +74,7 @@ func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, option
 		result = make([]map[string]any, 0)
 		var row map[string]any
 		for rows.Next() {
-			if row, err = m.mapRow(rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
+			if row, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
 				result = append(result, row)
 			} else {
 				return nil, err
@@ -99,7 +99,7 @@ func (m *mapper) FirstRow(ctx context.Context, sqli SqlInterface, args []any, op
 	if rows.Next() {
 		var colsReader *columnsReader
 		if colsReader, err = m.mapColumns(rows); err == nil {
-			result, err = m.mapRow(rows, colsReader, mappings, postProcesses, subQueries, exclusions)
+			result, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions)
 		}
 	}
 	return result, err
@@ -121,7 +121,7 @@ func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []an
 	if rows.Next() {
 		var colsReader *columnsReader
 		if colsReader, err = m.mapColumns(rows); err == nil {
-			result, err = m.mapRow(rows, colsReader, mappings, postProcesses, subQueries, exclusions)
+			result, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions)
 		}
 	}
 	return result, err
@@ -132,12 +132,13 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 	mappingsCopied := false
 	exclusions = make([]PropertyExclusions, 0)
 	querySet := false
+	subQueries = append(subQueries, m.rowSubQueries...)
 	if m.defaultQuery != nil {
 		querySet = true
 		query = string(*m.defaultQuery)
 	} else if m.subQuery != nil {
 		querySet = true
-		query = m.subQuery.Query()
+		query = m.subQuery.getQuery()
 	}
 	for _, o := range options {
 		if o != nil {
@@ -219,11 +220,56 @@ func (m *mapper) mapColumns(rows *sql.Rows) (cr *columnsReader, err error) {
 	return m.columnsInfo.reader(), err
 }
 
-func (m *mapper) mapRow(rows *sql.Rows, cols *columnsReader, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusions) (row map[string]any, err error) {
+func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, cols *columnsReader, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusions) (row map[string]any, err error) {
 	if err = rows.Scan(cols.scanArgs...); err == nil {
 		row = make(map[string]any, cols.count)
-		for i, n := range cols.names {
-			row[n] = cols.values[i]
+		for i, name := range cols.names {
+			value := cols.values[i]
+			useObject := row
+			var mapping *Mapping
+			if mp, ok := mappings[name]; ok {
+				mapping = &mp
+				if value == nil {
+					if mapping.OmitNull {
+						continue
+					} else if mapping.NullDefault != nil {
+						value = mapping.NullDefault
+					}
+				}
+				if mapping.PropertyName != "" {
+					name = mapping.PropertyName
+				}
+				for _, path := range mapping.Path {
+					found := false
+					if existing, ok := useObject[path]; ok {
+						if obj, ok := existing.(map[string]any); ok {
+							found = true
+							useObject = obj
+						}
+					}
+					if !found {
+						obj := map[string]any{}
+						useObject[path] = obj
+						useObject = obj
+
+					}
+				}
+			}
+			useObject[name] = value
+			if mapping != nil {
+				if mapping.PostProcess != nil {
+					if replaceValue, err := mapping.PostProcess(ctx, sqli, row, value); err != nil {
+						return nil, err
+					} else if replaceValue != nil {
+						useObject[name] = replaceValue
+					}
+				}
+			}
+		}
+		for _, sq := range subQueries {
+			if err := sq.Execute(ctx, sqli, row); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return row, err
