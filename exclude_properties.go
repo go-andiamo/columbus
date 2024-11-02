@@ -1,17 +1,22 @@
 package columbus
 
-type PropertyExclusions interface {
-	Exclude(property string, row map[string]any) bool
+type PropertyExclusion interface {
+	// Exclude should return true if the property is to be excluded
+	Exclude(property string, path []string) bool
 }
 
-type ConditionalExclude func(property string, row map[string]any) bool
+type PropertyExclusions []PropertyExclusion
 
-type ExcludeProperties map[string]ConditionalExclude
+type ConditionalExclude func(property string, path []string) bool
 
-func (xp ExcludeProperties) Exclude(property string, row map[string]any) bool {
+type AllowedProperties map[string]ConditionalExclude
+
+var _ PropertyExclusion = AllowedProperties{}
+
+func (xp AllowedProperties) Exclude(property string, path []string) bool {
 	if cx, ok := xp[property]; ok {
 		if cx != nil {
-			return cx(property, row)
+			return cx(property, path)
 		}
 		return false
 	}

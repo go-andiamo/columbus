@@ -23,7 +23,7 @@ func TestNewSubQuery_Execute(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.NotNil(t, row["test"])
 	require.Equal(t, 1, len(row["test"].([]map[string]any)))
@@ -45,14 +45,14 @@ func TestNewSubQuery_Execute_Twice(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.NotNil(t, row["test"])
 	require.Equal(t, 1, len(row["test"].([]map[string]any)))
 	require.NoError(t, mock.ExpectationsWereMet())
 
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.NotNil(t, row["test"])
 	require.Equal(t, 1, len(row["test"].([]map[string]any)))
@@ -75,7 +75,7 @@ func TestNewSubQuery_Execute_NoRows(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.Nil(t, row["test"])
 }
@@ -96,7 +96,7 @@ func TestNewSubQuery_Execute_ArgsErrors(t *testing.T) {
 		"no_parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 	require.Equal(t, "sub-query arg property 'parent_id' does not exist", err.Error())
 }
@@ -117,7 +117,7 @@ func TestNewSubQuery_Execute_SqlErrors(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnError(errors.New("foo"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 }
 
@@ -137,7 +137,7 @@ func TestNewObjectSubQuery_Execute(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.NotNil(t, row["test"].(map[string]any))
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -159,7 +159,7 @@ func TestNewObjectSubQuery_Execute_SqlError(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnError(errors.New("foo"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 }
 
@@ -179,7 +179,7 @@ func TestNewObjectSubQuery_Execute_EmptyNil(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{}))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.Nil(t, row["test"])
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -201,7 +201,7 @@ func TestNewObjectSubQuery_Execute_ErrNoRow(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.NotNil(t, row["test"])
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -223,7 +223,7 @@ func TestNewObjectSubQuery_Execute_ErrNoRow_Errors(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 	require.Equal(t, err, sql.ErrNoRows)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -245,7 +245,7 @@ func TestNewObjectSubQuery_Execute_SqlErrors(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnError(errors.New("foo"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 }
 
@@ -265,7 +265,7 @@ func TestNewObjectSubQuery_Execute_ArgsErrors(t *testing.T) {
 		"no_parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 	require.Equal(t, "sub-query arg property 'parent_id' does not exist", err.Error())
 }
@@ -286,7 +286,7 @@ func TestNewObjectSubQuery_Execute_ErrNoRows_ArgsErrors(t *testing.T) {
 		"no_parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 	require.Equal(t, "sub-query arg property 'parent_id' does not exist", err.Error())
 }
@@ -305,7 +305,7 @@ func TestNewMergeSubQuery_Execute(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("foo"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.Equal(t, 2, len(row))
 	require.Equal(t, row["id"], "foo")
@@ -326,7 +326,7 @@ func TestNewMergeSubQuery_Execute_NoOverwrite(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id", "parent_id"}).AddRow("foo", int64(17)))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.Equal(t, 2, len(row))
 	require.Equal(t, row["id"], "foo")
@@ -348,7 +348,7 @@ func TestNewMergeSubQuery_Execute_SqlErrors(t *testing.T) {
 		"parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnError(errors.New("foo"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 }
 
@@ -366,7 +366,7 @@ func TestNewMergeSubQuery_Execute_ArgsErrors(t *testing.T) {
 		"no_parent_id": int64(16),
 	}
 	mock.ExpectQuery("").WithArgs(int64(16)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("name"))
-	err = sq.Execute(ctx, db, row)
+	err = sq.Execute(ctx, db, row, nil)
 	require.Error(t, err)
 	require.Equal(t, "sub-query arg property 'parent_id' does not exist", err.Error())
 }

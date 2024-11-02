@@ -5,18 +5,17 @@ import (
 	"testing"
 )
 
-func TestExcludeProperties_Exclude(t *testing.T) {
-	exp := ExcludeProperties{
+func TestAllowedProperties_Exclude(t *testing.T) {
+	ap := AllowedProperties{
 		"foo": nil,
-		"bar": func(property string, row map[string]any) bool {
+		"bar": func(property string, path []string) bool {
 			return true
 		},
 	}
-	row := map[string]any{}
-	ex := exp.Exclude("foo", row)
+	ex := ap.Exclude("foo", nil)
 	require.False(t, ex)
-	ex = exp.Exclude("bar", row)
+	ex = ap.Exclude("bar", nil)
 	require.True(t, ex)
-	ex = exp.Exclude("baz", row)
+	ex = ap.Exclude("baz", nil)
 	require.True(t, ex)
 }

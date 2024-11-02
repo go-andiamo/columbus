@@ -16,6 +16,9 @@ type Mapping struct {
 	NullDefault any
 	// PostProcess is an optional post-process function to be run on the property
 	PostProcess PostProcess
+	// Scanner is an optional ColumnScanner function that reads the value from the database column
+	Scanner ColumnScanner
 }
 
+// Mappings is a map of Mapping by column name
 type Mappings map[string]Mapping
