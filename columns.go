@@ -73,7 +73,7 @@ func (ci *columnsInfo) buildScanner(cr *columnsReader, index int) sql.Scanner {
 			columns: cr,
 			index:   index,
 		}
-	case "DECIMAL", "FLOAT", "DOUBLE":
+	case "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC":
 		return &decimalColumnScanner{
 			columns: cr,
 			index:   index,
