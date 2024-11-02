@@ -5,17 +5,19 @@ import (
 	"database/sql"
 	"fmt"
 	"github.com/go-andiamo/columbus"
-	"github.com/go-sql-driver/mysql"
+	"github.com/lib/pq"
 	"strings"
 	"time"
+
+	_ "github.com/lib/pq"
 )
 
 func main() {
 	cfg := config{
 		Host:     "localhost",
-		Port:     52717,
-		Username: "root",
-		Password: "root",
+		Port:     52718,
+		Username: "admin",
+		Password: "1234",
 		Name:     "test_db",
 	}
 	db, err := openDatabase(cfg)
@@ -28,8 +30,8 @@ func main() {
 
 	err = createTestTable(db, "foo")
 	if err != nil {
-		if myerr, ok := err.(*mysql.MySQLError); ok {
-			if myerr.Number != 1050 {
+		if pgErr, ok := err.(*pq.Error); ok {
+			if pgErr.Code != "42P07" {
 				panic(err)
 			}
 		} else {
@@ -43,6 +45,7 @@ func main() {
 		"col_c": time.Now(),
 		"col_d": "TEXT",
 		"col_e": `{"foo":"bar"}`,
+		"col_f": `{"foo":"bar"}`,
 		"col_g": 16.16,
 		"col_h": true,
 		"col_i": 16,
@@ -69,10 +72,12 @@ func insert(db *sql.DB, tableName string, row map[string]any) error {
 	cols := make([]string, 0, len(row))
 	args := make([]any, 0, len(row))
 	markers := make([]string, 0, len(row))
+	arg := 1
 	for k, v := range row {
 		cols = append(cols, k)
 		args = append(args, v)
-		markers = append(markers, "?")
+		markers = append(markers, fmt.Sprintf("$%d", arg))
+		arg++
 	}
 	query := `INSERT INTO ` + tableName + ` (` + strings.Join(cols, ",") + `) VALUES (` + strings.Join(markers, ",") + `)`
 	_, err := db.ExecContext(context.Background(), query, args...)
@@ -86,16 +91,15 @@ func createTestTable(db *sql.DB, name string) error {
     	col_c TIMESTAMP(3)  DEFAULT CURRENT_TIMESTAMP(3),
     	col_d TEXT,
     	col_e JSON,
-    	-- col_f JSONB,
+    	col_f JSONB,
     	col_g DECIMAL(20,3),
     	col_h BOOL,
     	col_i INT,
     	col_j FLOAT,
     	col_k BIGINT,
-    	col_l TINYINT,
     	col_m REAL,
     	col_n BIT
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;`, name))
+    )`, name))
 	return err
 }
 
@@ -108,12 +112,12 @@ type config struct {
 }
 
 func openDatabase(cfg config) (*sql.DB, error) {
-	db, err := sql.Open("mysql", Dsn(cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Name))
+	db, err := sql.Open("postgres", Dsn(cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Name))
 	if err != nil {
 		return nil, err
 	}
 	err = db.Ping()
-	if myErr, ok := err.(*mysql.MySQLError); ok && myErr.Number == 1049 {
+	if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "3D000" {
 		// database (catalog) does not exist - try creating it...
 		return createDatabase(cfg)
 	}
@@ -121,9 +125,10 @@ func openDatabase(cfg config) (*sql.DB, error) {
 }
 
 func createDatabase(cfg config) (*sql.DB, error) {
-	if db, err := sql.Open("mysql", Dsn(cfg.Host, cfg.Port, cfg.Username, cfg.Password, "")); err == nil {
-		if _, err := db.Exec("CREATE SCHEMA " + cfg.Name); err == nil {
-			if db, err := sql.Open("mysql", Dsn(cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Name)); err == nil {
+	if db, err := sql.Open("postgres", Dsn(cfg.Host, cfg.Port, cfg.Username, cfg.Password, "postgres")); err == nil {
+		if _, err := db.Exec("CREATE DATABASE " + cfg.Name); err == nil {
+			_ = db.Close()
+			if db, err := sql.Open("postgres", Dsn(cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Name)); err == nil {
 				return db, db.Ping()
 			} else {
 				return nil, err
@@ -137,6 +142,6 @@ func createDatabase(cfg config) (*sql.DB, error) {
 }
 
 func Dsn(host string, port int, username, password, dbName string) string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8&parseTime=true&multiStatements=true",
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
 		username, password, host, port, dbName)
 }
