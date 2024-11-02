@@ -70,7 +70,7 @@ func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, option
 		_ = rows.Close()
 	}()
 	var colsReader *columnsReader
-	if colsReader, err = m.mapColumns(rows); err == nil {
+	if colsReader, err = m.mapColumns(rows, mappings); err == nil {
 		result = make([]map[string]any, 0)
 		var row map[string]any
 		for rows.Next() {
@@ -98,7 +98,7 @@ func (m *mapper) FirstRow(ctx context.Context, sqli SqlInterface, args []any, op
 	}()
 	if rows.Next() {
 		var colsReader *columnsReader
-		if colsReader, err = m.mapColumns(rows); err == nil {
+		if colsReader, err = m.mapColumns(rows, mappings); err == nil {
 			result, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions)
 		}
 	}
@@ -120,19 +120,20 @@ func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []an
 	err = sql.ErrNoRows
 	if rows.Next() {
 		var colsReader *columnsReader
-		if colsReader, err = m.mapColumns(rows); err == nil {
+		if colsReader, err = m.mapColumns(rows, mappings); err == nil {
 			result, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions)
 		}
 	}
 	return result, err
 }
 
-func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusions, err error) {
+func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusion, err error) {
 	mappings = m.mappings
 	mappingsCopied := false
-	exclusions = make([]PropertyExclusions, 0)
+	exclusions = make([]PropertyExclusion, 0)
 	querySet := false
 	subQueries = append(subQueries, m.rowSubQueries...)
+	postProcesses = append(postProcesses, m.rowPostProcessors...)
 	if m.defaultQuery != nil {
 		querySet = true
 		query = string(*m.defaultQuery)
@@ -160,8 +161,10 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 				for k, v := range option {
 					mappings[k] = v
 				}
-			case PropertyExclusions:
+			case PropertyExclusion:
 				exclusions = append(exclusions, option)
+			case PropertyExclusions:
+				exclusions = append(exclusions, option...)
 			case RowPostProcessor:
 				postProcesses = append(postProcesses, option)
 			case SubQuery:
@@ -207,7 +210,7 @@ func (m *mapper) addOptions(options ...any) error {
 	return nil
 }
 
-func (m *mapper) mapColumns(rows *sql.Rows) (cr *columnsReader, err error) {
+func (m *mapper) mapColumns(rows *sql.Rows, mappings Mappings) (cr *columnsReader, err error) {
 	m.mutex.RLock()
 	if m.columnsInfo != nil {
 		m.mutex.RUnlock()
@@ -216,17 +219,18 @@ func (m *mapper) mapColumns(rows *sql.Rows) (cr *columnsReader, err error) {
 	m.mutex.RUnlock()
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	m.columnsInfo, err = newColumnsInfo(rows)
+	m.columnsInfo, err = newColumnsInfo(rows, mappings)
 	return m.columnsInfo.reader(), err
 }
 
-func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, cols *columnsReader, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusions) (row map[string]any, err error) {
+func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, cols *columnsReader, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions PropertyExclusions) (row map[string]any, err error) {
 	if err = rows.Scan(cols.scanArgs...); err == nil {
 		row = make(map[string]any, cols.count)
 		for i, name := range cols.names {
 			value := cols.values[i]
 			useObject := row
 			var mapping *Mapping
+			excluded := false
 			if mp, ok := mappings[name]; ok {
 				mapping = &mp
 				if value == nil {
@@ -239,38 +243,64 @@ func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, 
 				if mapping.PropertyName != "" {
 					name = mapping.PropertyName
 				}
-				for _, path := range mapping.Path {
-					found := false
-					if existing, ok := useObject[path]; ok {
-						if obj, ok := existing.(map[string]any); ok {
-							found = true
+				if excluded = isExcluded(name, mapping.Path, exclusions); !excluded {
+					for _, path := range mapping.Path {
+						found := false
+						if existing, ok := useObject[path]; ok {
+							if obj, ok := existing.(map[string]any); ok {
+								found = true
+								useObject = obj
+							}
+						}
+						if !found {
+							obj := map[string]any{}
+							useObject[path] = obj
 							useObject = obj
+
 						}
 					}
-					if !found {
-						obj := map[string]any{}
-						useObject[path] = obj
-						useObject = obj
-
-					}
 				}
+			} else {
+				excluded = isExcluded(name, nil, exclusions)
 			}
-			useObject[name] = value
-			if mapping != nil {
-				if mapping.PostProcess != nil {
-					if replaceValue, err := mapping.PostProcess(ctx, sqli, row, value); err != nil {
-						return nil, err
-					} else if replaceValue != nil {
-						useObject[name] = replaceValue
+			if !excluded {
+				useObject[name] = value
+				if mapping != nil {
+					if mapping.PostProcess != nil {
+						if replaceValue, err := mapping.PostProcess(ctx, sqli, row, value); err != nil {
+							return nil, err
+						} else if replaceValue != nil {
+							useObject[name] = replaceValue
+						}
 					}
 				}
 			}
 		}
 		for _, sq := range subQueries {
-			if err := sq.Execute(ctx, sqli, row); err != nil {
-				return nil, err
+			if sq != nil && (sq.ProvidesProperty() == "" || !isExcluded(sq.ProvidesProperty(), nil, exclusions)) {
+				if err = sq.Execute(ctx, sqli, row, exclusions); err != nil {
+					return nil, err
+				}
+			}
+		}
+		for _, rp := range postProcesses {
+			if rp != nil && (rp.ProvidesProperty() == "" || !isExcluded(rp.ProvidesProperty(), nil, exclusions)) {
+				if err = rp.PostProcess(ctx, sqli, row); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
 	return row, err
+}
+
+func isExcluded(property string, path []string, exclusions PropertyExclusions) bool {
+	for _, exc := range exclusions {
+		if exc != nil {
+			if exc.Exclude(property, path) {
+				return true
+			}
+		}
+	}
+	return false
 }

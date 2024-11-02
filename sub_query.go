@@ -7,7 +7,8 @@ import (
 )
 
 type SubQuery interface {
-	Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error
+	Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error
+	ProvidesProperty() string
 	getQuery() string
 }
 
@@ -72,19 +73,23 @@ func (sq *subQuery) getQuery() string {
 	return sq.query
 }
 
+func (sq *subQuery) ProvidesProperty() string {
+	return sq.propertyName
+}
+
 type sliceSubQuery struct {
 	subQuery
 }
 
 var _ SubQuery = &sliceSubQuery{}
 
-func (sq *sliceSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+func (sq *sliceSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
 	args, err := sq.getArgs(row)
 	if err != nil {
 		return err
 	}
-	if rows, err := rm.Rows(ctx, sqli, args); err != nil {
+	if rows, err := rm.Rows(ctx, sqli, args, exclusions); err != nil {
 		return err
 	} else if sq.emptyNil && (rows == nil || len(rows) == 0) {
 		row[sq.propertyName] = nil
@@ -100,13 +105,13 @@ type objectSubQuery struct {
 
 var _ SubQuery = &objectSubQuery{}
 
-func (sq *objectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+func (sq *objectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
 	args, err := sq.getArgs(row)
 	if err != nil {
 		return err
 	}
-	if obj, err := rm.FirstRow(ctx, sqli, args); err != nil {
+	if obj, err := rm.FirstRow(ctx, sqli, args, exclusions); err != nil {
 		return err
 	} else if sq.emptyNil && (obj == nil || len(obj) == 0) {
 		row[sq.propertyName] = nil
@@ -122,13 +127,13 @@ type exactObjectSubQuery struct {
 
 var _ SubQuery = &exactObjectSubQuery{}
 
-func (sq *exactObjectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+func (sq *exactObjectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
 	args, err := sq.getArgs(row)
 	if err != nil {
 		return err
 	}
-	if obj, err := rm.ExactlyOneRow(ctx, sqli, args); err != nil {
+	if obj, err := rm.ExactlyOneRow(ctx, sqli, args, exclusions); err != nil {
 		return err
 	} else {
 		row[sq.propertyName] = obj
@@ -143,13 +148,13 @@ type mergeSubQuery struct {
 
 var _ SubQuery = &mergeSubQuery{}
 
-func (sq *mergeSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any) error {
+func (sq *mergeSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
 	args, err := sq.getArgs(row)
 	if err != nil {
 		return err
 	}
-	if obj, err := rm.FirstRow(ctx, sqli, args); err != nil {
+	if obj, err := rm.FirstRow(ctx, sqli, args, exclusions); err != nil {
 		return err
 	} else if sq.noOverwrite {
 		for k, v := range obj {
