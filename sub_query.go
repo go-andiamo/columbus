@@ -6,6 +6,11 @@ import (
 	"sync"
 )
 
+// SubQuery is an interface that can be passed as an option to Mapper
+//
+// use NewSubQuery, NewObjectSubQuery or NewMergeSubQuery to create appropriate sub-query type
+//
+// Any SubQuery(s) passed to Mapper are executed after the row is mapped
 type SubQuery interface {
 	Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error
 	ProvidesProperty() string

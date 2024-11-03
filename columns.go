@@ -35,11 +35,12 @@ func BoolColumn(src any) (any, error) {
 }
 
 type columnsInfo struct {
-	count     int
-	names     []string
-	scanTypes []reflect.Type
-	dbTypes   []string
-	mappings  Mappings
+	count       int
+	names       []string
+	scanTypes   []reflect.Type
+	dbTypes     []string
+	mappings    Mappings
+	useDecimals bool
 }
 
 type columnsReader struct {
@@ -49,16 +50,17 @@ type columnsReader struct {
 	scanArgs []any
 }
 
-func newColumnsInfo(rows *sql.Rows, mappings Mappings) (result *columnsInfo, err error) {
+func newColumnsInfo(rows *sql.Rows, useDecimals bool, mappings Mappings) (result *columnsInfo, err error) {
 	var cts []*sql.ColumnType
 	if cts, err = rows.ColumnTypes(); err == nil {
 		count := len(cts)
 		result = &columnsInfo{
-			count:     count,
-			names:     make([]string, count),
-			scanTypes: make([]reflect.Type, count),
-			dbTypes:   make([]string, count),
-			mappings:  mappings,
+			count:       count,
+			names:       make([]string, count),
+			scanTypes:   make([]reflect.Type, count),
+			dbTypes:     make([]string, count),
+			mappings:    mappings,
+			useDecimals: useDecimals,
 		}
 		for i, ct := range cts {
 			result.names[i] = ct.Name()
@@ -97,12 +99,14 @@ func (ci *columnsInfo) buildScanner(cr *columnsReader, index int) sql.Scanner {
 			index:   index,
 		}
 	case "DECIMAL", "FLOAT", "DOUBLE", "NUMERIC":
-		return &decimalColumnScanner{
-			columns: cr,
-			index:   index,
+		if ci.useDecimals {
+			return &decimalColumnScanner{
+				columns: cr,
+				index:   index,
+			}
 		}
 	default:
-		if strings.HasPrefix(ci.dbTypes[index], "FLOAT") {
+		if ci.useDecimals && strings.HasPrefix(ci.dbTypes[index], "FLOAT") {
 			return &decimalColumnScanner{
 				columns: cr,
 				index:   index,
@@ -117,9 +121,11 @@ func (ci *columnsInfo) buildScanner(cr *columnsReader, index int) sql.Scanner {
 			index:   index,
 		}
 	case *float32, *float64, float32, float64, *sql.NullFloat64:
-		return &decimalColumnScanner{
-			columns: cr,
-			index:   index,
+		if ci.useDecimals {
+			return &decimalColumnScanner{
+				columns: cr,
+				index:   index,
+			}
 		}
 	}
 	return &rawColumnScanner{

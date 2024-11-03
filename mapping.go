@@ -2,8 +2,12 @@ package columbus
 
 import "context"
 
-type PostProcess func(ctx context.Context, sqli SqlInterface, row map[string]any, value any) (replaceValue any, err error)
+// PostProcess is an optional function used on a Mapping
+//
+// If used on a mapping property, it is called with the current value and can return a replacement value
+type PostProcess func(ctx context.Context, sqli SqlInterface, row map[string]any, value any) (replace bool, replaceValue any, err error)
 
+// Mapping is a struct that indicates how each column is handled
 type Mapping struct {
 	// PropertyName is the property name to use (if not an empty string) - overrides the column name
 	PropertyName string
