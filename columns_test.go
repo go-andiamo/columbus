@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestNewColumnsInfo(t *testing.T) {
@@ -129,6 +130,21 @@ func TestColumnsInfo_Reader_Decimal(t *testing.T) {
 	require.Nil(t, r.values[0])
 }
 
+func TestColumnsInfo_Reader_FloatN(t *testing.T) {
+	ci := &columnsInfo{
+		count:   1,
+		names:   []string{"a"},
+		dbTypes: []string{"FLOAT8"},
+	}
+	r := ci.reader()
+	require.NotNil(t, r)
+	require.Equal(t, 1, r.count)
+	require.Equal(t, 1, len(r.names))
+	require.Equal(t, 1, len(r.scanArgs))
+	require.Equal(t, 1, len(r.values))
+	require.IsType(t, &decimalColumnScanner{}, r.scanArgs[0])
+}
+
 func TestColumnsInfo_Reader_String(t *testing.T) {
 	ci := &columnsInfo{
 		count:     1,
@@ -188,4 +204,27 @@ func TestColumnsInfo_Reader_Raw(t *testing.T) {
 	err := s.Scan(16)
 	require.NoError(t, err)
 	require.Equal(t, 16, r.values[0])
+}
+
+func TestBoolColumn(t *testing.T) {
+	v, err := BoolColumn(nil)
+	require.NoError(t, err)
+	require.False(t, v.(bool))
+	v, err = BoolColumn(true)
+	require.NoError(t, err)
+	require.True(t, v.(bool))
+	v, err = BoolColumn(int64(1))
+	require.NoError(t, err)
+	require.True(t, v.(bool))
+	v, err = BoolColumn(1.1)
+	require.NoError(t, err)
+	require.True(t, v.(bool))
+	v, err = BoolColumn("T")
+	require.NoError(t, err)
+	require.True(t, v.(bool))
+	v, err = BoolColumn([]byte("T"))
+	require.NoError(t, err)
+	require.True(t, v.(bool))
+	_, err = BoolColumn(time.Now())
+	require.Error(t, err)
 }

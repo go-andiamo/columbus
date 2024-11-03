@@ -3,10 +3,36 @@ package columbus
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"github.com/shopspring/decimal"
 	"reflect"
+	"strconv"
 	"strings"
 )
+
+// ColumnScanner is a func that can be used by Mapping to read the value of a column
+type ColumnScanner func(src any) (value any, err error)
+
+// BoolColumn is a ColumnScanner that can be used by Mapping.Scanner to convert a column to a boolean property
+//
+// Particularly useful for MySql which only supports BOOL columns as TINYINT
+func BoolColumn(src any) (any, error) {
+	switch v := src.(type) {
+	case bool:
+		return v, nil
+	case int64:
+		return v != 0, nil
+	case float64:
+		return v != 0, nil
+	case []byte:
+		return strconv.ParseBool(string(v))
+	case string:
+		return strconv.ParseBool(v)
+	case nil:
+		return false, nil
+	}
+	return nil, fmt.Errorf("type %T is not a bool", src)
+}
 
 type columnsInfo struct {
 	count     int
@@ -56,9 +82,6 @@ func (ci *columnsInfo) reader() *columnsReader {
 	return r
 }
 
-// ColumnScanner is a func that can be used by Mapping to read the value of a column
-type ColumnScanner func(src any) (value any, err error)
-
 func (ci *columnsInfo) buildScanner(cr *columnsReader, index int) sql.Scanner {
 	if m, ok := ci.mappings[ci.names[index]]; ok && m.Scanner != nil {
 		return &customColumnScanner{
@@ -77,6 +100,13 @@ func (ci *columnsInfo) buildScanner(cr *columnsReader, index int) sql.Scanner {
 		return &decimalColumnScanner{
 			columns: cr,
 			index:   index,
+		}
+	default:
+		if strings.HasPrefix(ci.dbTypes[index], "FLOAT") {
+			return &decimalColumnScanner{
+				columns: cr,
+				index:   index,
+			}
 		}
 	}
 	v := reflect.New(ci.scanTypes[index]).Interface()

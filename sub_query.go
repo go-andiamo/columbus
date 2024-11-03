@@ -193,5 +193,8 @@ func (sq *subQuery) rowMapper(asq SubQuery) *mapper {
 	defer sq.mutex.Unlock()
 	sq.mapper, _ = newMapper(nil, sq.mappings)
 	sq.mapper.subQuery = asq
+	if sq.propertyName != "" {
+		sq.mapper.subPath = []string{sq.propertyName}
+	}
 	return sq.mapper
 }

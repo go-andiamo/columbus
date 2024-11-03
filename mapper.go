@@ -3,8 +3,10 @@ package columbus
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 )
@@ -13,6 +15,9 @@ type Mapper interface {
 	Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) ([]map[string]any, error)
 	FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error)
 	ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error)
+	WriteRows(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
+	WriteFirstRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
+	WriteExactlyOneRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
 }
 
 // NewMapper creates a new row mapper
@@ -55,7 +60,10 @@ type mapper struct {
 	defaultQuery      *Query
 	// subQuery is set by parent sub-query
 	subQuery SubQuery
+	subPath  []string
 }
+
+var _ Mapper = (*mapper)(nil)
 
 func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result []map[string]any, err error) {
 	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
@@ -127,10 +135,94 @@ func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []an
 	return result, err
 }
 
-func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions []PropertyExclusion, err error) {
+func (m *mapper) WriteRows(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) (err error) {
+	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
+	if err != nil {
+		return err
+	}
+	rows, err := sqli.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	var colsReader *columnsReader
+	if colsReader, err = m.mapColumns(rows, mappings); err == nil {
+		var row map[string]any
+		if _, err = writer.Write([]byte("[")); err == nil {
+			jw := json.NewEncoder(writer)
+			first := true
+			for rows.Next() && err == nil {
+				if row, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
+					if !first {
+						_, err = writer.Write([]byte(","))
+					}
+					if err == nil {
+						err = jw.Encode(row)
+						first = false
+					}
+				}
+			}
+		}
+		_, err = writer.Write([]byte("]"))
+	}
+	return err
+}
+
+func (m *mapper) WriteFirstRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) (err error) {
+	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
+	if err != nil {
+		return err
+	}
+	rows, err := sqli.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	if rows.Next() {
+		var colsReader *columnsReader
+		if colsReader, err = m.mapColumns(rows, mappings); err == nil {
+			var row map[string]any
+			if row, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
+				err = json.NewEncoder(writer).Encode(row)
+			}
+		}
+	}
+	return err
+}
+
+func (m *mapper) WriteExactlyOneRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) (err error) {
+	query, mappings, postProcesses, subQueries, exclusions, err := m.rowMapOptions(options...)
+	if err != nil {
+		return err
+	}
+	rows, err := sqli.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	err = sql.ErrNoRows
+	if rows.Next() {
+		var colsReader *columnsReader
+		if colsReader, err = m.mapColumns(rows, mappings); err == nil {
+			var row map[string]any
+			if row, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
+				err = json.NewEncoder(writer).Encode(row)
+			}
+		}
+	}
+	return err
+}
+
+func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions PropertyExclusions, err error) {
 	mappings = m.mappings
 	mappingsCopied := false
-	exclusions = make([]PropertyExclusion, 0)
+	exclusions = make([]PropertyExcluder, 0)
 	querySet := false
 	subQueries = append(subQueries, m.rowSubQueries...)
 	postProcesses = append(postProcesses, m.rowPostProcessors...)
@@ -161,16 +253,20 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 				for k, v := range option {
 					mappings[k] = v
 				}
-			case PropertyExclusion:
-				exclusions = append(exclusions, option)
 			case PropertyExclusions:
 				exclusions = append(exclusions, option...)
+			case PropertyExcluder:
+				exclusions = append(exclusions, option)
 			case RowPostProcessor:
 				postProcesses = append(postProcesses, option)
 			case SubQuery:
 				subQueries = append(subQueries, option)
 			default:
-				return "", nil, nil, nil, nil, fmt.Errorf("unknown option type: %T", o)
+				if excf, ok := o.(func(string, []string) bool); ok {
+					exclusions = append(exclusions, ConditionalExclude(excf))
+				} else {
+					return "", nil, nil, nil, nil, fmt.Errorf("unknown option type: %T", o)
+				}
 			}
 		}
 	}
@@ -243,7 +339,7 @@ func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, 
 				if mapping.PropertyName != "" {
 					name = mapping.PropertyName
 				}
-				if excluded = isExcluded(name, mapping.Path, exclusions); !excluded {
+				if excluded = exclusions.Exclude(name, append(m.subPath, mapping.Path...)); !excluded {
 					for _, path := range mapping.Path {
 						found := false
 						if existing, ok := useObject[path]; ok {
@@ -261,7 +357,7 @@ func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, 
 					}
 				}
 			} else {
-				excluded = isExcluded(name, nil, exclusions)
+				excluded = exclusions.Exclude(name, m.subPath)
 			}
 			if !excluded {
 				useObject[name] = value
@@ -277,14 +373,14 @@ func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, 
 			}
 		}
 		for _, sq := range subQueries {
-			if sq != nil && (sq.ProvidesProperty() == "" || !isExcluded(sq.ProvidesProperty(), nil, exclusions)) {
+			if sq != nil && (sq.ProvidesProperty() == "" || !exclusions.Exclude(sq.ProvidesProperty(), nil)) {
 				if err = sq.Execute(ctx, sqli, row, exclusions); err != nil {
 					return nil, err
 				}
 			}
 		}
 		for _, rp := range postProcesses {
-			if rp != nil && (rp.ProvidesProperty() == "" || !isExcluded(rp.ProvidesProperty(), nil, exclusions)) {
+			if rp != nil && (rp.ProvidesProperty() == "" || !exclusions.Exclude(rp.ProvidesProperty(), nil)) {
 				if err = rp.PostProcess(ctx, sqli, row); err != nil {
 					return nil, err
 				}
@@ -292,15 +388,4 @@ func (m *mapper) mapRow(ctx context.Context, sqli SqlInterface, rows *sql.Rows, 
 		}
 	}
 	return row, err
-}
-
-func isExcluded(property string, path []string, exclusions PropertyExclusions) bool {
-	for _, exc := range exclusions {
-		if exc != nil {
-			if exc.Exclude(property, path) {
-				return true
-			}
-		}
-	}
-	return false
 }
