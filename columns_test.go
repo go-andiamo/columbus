@@ -27,7 +27,7 @@ func TestNewColumnsInfo(t *testing.T) {
 		_ = rows.Close()
 	}()
 
-	info, err := newColumnsInfo(rows, nil)
+	info, err := newColumnsInfo(rows, false, nil)
 	require.NoError(t, err)
 	require.NotNil(t, info)
 }
@@ -86,14 +86,14 @@ func TestColumnsInfo_Reader_Json(t *testing.T) {
 	err = s.Scan(nil)
 	require.NoError(t, err)
 	require.Equal(t, nil, r.values[0])
-
 }
 
 func TestColumnsInfo_Reader_Decimal(t *testing.T) {
 	ci := &columnsInfo{
-		count:   1,
-		names:   []string{"a"},
-		dbTypes: []string{"DECIMAL"},
+		count:       1,
+		names:       []string{"a"},
+		dbTypes:     []string{"DECIMAL"},
+		useDecimals: true,
 	}
 	r := ci.reader()
 	require.NotNil(t, r)
@@ -130,11 +130,29 @@ func TestColumnsInfo_Reader_Decimal(t *testing.T) {
 	require.Nil(t, r.values[0])
 }
 
+func TestColumnsInfo_Reader_Decimal_NoUseCecimals(t *testing.T) {
+	ci := &columnsInfo{
+		count:       1,
+		names:       []string{"a"},
+		dbTypes:     []string{"DECIMAL"},
+		scanTypes:   []reflect.Type{reflect.TypeOf(1.0)},
+		useDecimals: false,
+	}
+	r := ci.reader()
+	require.NotNil(t, r)
+	require.Equal(t, 1, r.count)
+	require.Equal(t, 1, len(r.names))
+	require.Equal(t, 1, len(r.scanArgs))
+	require.Equal(t, 1, len(r.values))
+	require.IsType(t, &rawColumnScanner{}, r.scanArgs[0])
+}
+
 func TestColumnsInfo_Reader_FloatN(t *testing.T) {
 	ci := &columnsInfo{
-		count:   1,
-		names:   []string{"a"},
-		dbTypes: []string{"FLOAT8"},
+		count:       1,
+		names:       []string{"a"},
+		dbTypes:     []string{"FLOAT8"},
+		useDecimals: true,
 	}
 	r := ci.reader()
 	require.NotNil(t, r)
@@ -143,6 +161,11 @@ func TestColumnsInfo_Reader_FloatN(t *testing.T) {
 	require.Equal(t, 1, len(r.scanArgs))
 	require.Equal(t, 1, len(r.values))
 	require.IsType(t, &decimalColumnScanner{}, r.scanArgs[0])
+
+	ci.useDecimals = false
+	ci.scanTypes = []reflect.Type{reflect.TypeOf(1.0)}
+	r = ci.reader()
+	require.IsType(t, &rawColumnScanner{}, r.scanArgs[0])
 }
 
 func TestColumnsInfo_Reader_String(t *testing.T) {
@@ -171,10 +194,11 @@ func TestColumnsInfo_Reader_String(t *testing.T) {
 
 func TestColumnsInfo_Reader_Float(t *testing.T) {
 	ci := &columnsInfo{
-		count:     1,
-		names:     []string{"a"},
-		dbTypes:   []string{""},
-		scanTypes: []reflect.Type{reflect.TypeOf(1.0)},
+		count:       1,
+		names:       []string{"a"},
+		dbTypes:     []string{""},
+		scanTypes:   []reflect.Type{reflect.TypeOf(1.0)},
+		useDecimals: true,
 	}
 	r := ci.reader()
 	require.NotNil(t, r)
@@ -183,6 +207,10 @@ func TestColumnsInfo_Reader_Float(t *testing.T) {
 	require.Equal(t, 1, len(r.scanArgs))
 	require.Equal(t, 1, len(r.values))
 	require.IsType(t, &decimalColumnScanner{}, r.scanArgs[0])
+
+	ci.useDecimals = false
+	r = ci.reader()
+	require.IsType(t, &rawColumnScanner{}, r.scanArgs[0])
 }
 
 func TestColumnsInfo_Reader_Raw(t *testing.T) {
