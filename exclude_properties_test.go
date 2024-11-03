@@ -19,3 +19,10 @@ func TestAllowedProperties_Exclude(t *testing.T) {
 	ex = ap.Exclude("baz", nil)
 	require.True(t, ex)
 }
+
+func TestConditionalExclude(t *testing.T) {
+	excf := ConditionalExclude(func(property string, path []string) bool {
+		return true
+	})
+	require.True(t, excf.Exclude("foo", nil))
+}

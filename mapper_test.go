@@ -1,7 +1,9 @@
 package columbus
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
@@ -180,6 +182,11 @@ func TestMapper_rowMapOptions_excludeProperties(t *testing.T) {
 	_, _, _, _, exclusions, err = m.rowMapOptions(PropertyExclusions{AllowedProperties{"a": nil}, AllowedProperties{"b": nil}})
 	require.NoError(t, err)
 	require.Equal(t, 2, len(exclusions))
+
+	excfn := func(property string, path []string) bool { return false }
+	_, _, _, _, exclusions, err = m.rowMapOptions(excfn)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(exclusions))
 }
 
 func TestMapper_Rows_SqlErrors(t *testing.T) {
@@ -197,6 +204,23 @@ func TestMapper_Rows_SqlErrors(t *testing.T) {
 	_, err = m.Rows(ctx, db, nil)
 	require.Error(t, err)
 	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_Rows(t *testing.T) {
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+
+	rows, err := m.Rows(ctx, db, nil)
+	require.NoError(t, err)
+	require.Len(t, rows, 2)
 }
 
 func TestMapper_Rows_MapRowErrors(t *testing.T) {
@@ -237,6 +261,31 @@ func TestMapper_FirstRow_SqlErrors(t *testing.T) {
 	_, err = m.FirstRow(ctx, db, nil)
 	require.Error(t, err)
 	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_ExactlyOneRow(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c"}).AddRow(
+		"a value",
+		int64(16),
+		float64(16)))
+
+	row, err := m.ExactlyOneRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.NotNil(t, row)
+
+	assert.Equal(t, "a value", row["a"])
+	assert.Equal(t, int64(16), row["b"])
+	assert.Equal(t, float64(16), row["c"])
 }
 
 func TestMapper_ExactlyOneRow_SqlErrors(t *testing.T) {
@@ -668,6 +717,160 @@ func TestMapper_RowPostProcessor_SqlErrors(t *testing.T) {
 	_, err = m.FirstRow(ctx, db, nil)
 	require.Error(t, err)
 	require.Equal(t, "fooey", err.Error())
+}
+
+func TestMapper_WriteRows(t *testing.T) {
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+
+	w := bytes.NewBuffer(nil)
+	err = m.WriteRows(ctx, w, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.Equal(t, "[{\"a\":\"a value\"}\n,{\"a\":\"a value 2\"}\n]", w.String())
+}
+
+func TestMapper_WriteRows_SqlErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("foo"))
+
+	err = m.WriteRows(ctx, nil, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_WriteRows_OptionsErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	require.NoError(t, err)
+
+	err = m.WriteRows(ctx, nil, nil, nil, "not a valid option")
+	require.Error(t, err)
+	require.Equal(t, "unknown option type: string", err.Error())
+}
+
+func TestMapper_WriteFirstRow(t *testing.T) {
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+
+	w := bytes.NewBuffer(nil)
+	err = m.WriteFirstRow(ctx, w, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.Equal(t, "{\"a\":\"a value\"}\n", w.String())
+}
+
+func TestMapper_WriteFirstRow_SqlErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("foo"))
+
+	err = m.WriteFirstRow(ctx, nil, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_WriteFirstRow_OptionsErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	require.NoError(t, err)
+
+	err = m.WriteFirstRow(ctx, nil, nil, nil, "not a valid option")
+	require.Error(t, err)
+	require.Equal(t, "unknown option type: string", err.Error())
+}
+
+func TestMapper_WriteExactlyOneRow(t *testing.T) {
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+
+	w := bytes.NewBuffer(nil)
+	err = m.WriteExactlyOneRow(ctx, w, db, nil)
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+	require.Equal(t, "{\"a\":\"a value\"}\n", w.String())
+}
+
+func TestMapper_WriteExactlyOneRow_ErrorNoRow(t *testing.T) {
+	m, err := newMapper("a", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}))
+
+	w := bytes.NewBuffer(nil)
+	err = m.WriteExactlyOneRow(ctx, w, db, nil)
+	require.Error(t, err)
+	require.Equal(t, sql.ErrNoRows, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestMapper_WriteExactlyOneRow_SqlErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("foo"))
+
+	err = m.WriteExactlyOneRow(ctx, nil, db, nil)
+	require.Error(t, err)
+	require.Equal(t, "foo", err.Error())
+}
+
+func TestMapper_WriteExactlyOneRow_OptionsErrors(t *testing.T) {
+	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	require.NoError(t, err)
+
+	err = m.WriteExactlyOneRow(ctx, nil, nil, nil, "not a valid option")
+	require.Error(t, err)
+	require.Equal(t, "unknown option type: string", err.Error())
 }
 
 func hasProperties(obj map[string]any, keys ...string) bool {
