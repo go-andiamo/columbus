@@ -33,7 +33,7 @@ func (f ConditionalExclude) Exclude(property string, path []string) bool {
 	return f(property, path)
 }
 
-var _ PropertyExcluder = AllowedProperties{}
+var _ PropertyExcluder = (AllowedProperties)(nil)
 
 func (xp AllowedProperties) Exclude(property string, path []string) bool {
 	if cx, ok := xp[property]; ok {
