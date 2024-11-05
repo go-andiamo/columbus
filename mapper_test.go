@@ -954,6 +954,54 @@ func TestMapper_Iterate_MapRowErrors(t *testing.T) {
 	require.Equal(t, "foo", err.Error())
 }
 
+func TestMapper_Extend(t *testing.T) {
+	m, err := NewMapper("a",
+		Mappings{"a": {Path: []string{"sub_obj"}}},
+		Query(`FROM table`),
+		&dummyRowPostProcessor{},
+		NewSubQuery("x", `SELECT * FROM other`, nil, nil, false),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	mt := m.(*mapper)
+	require.Equal(t, "SELECT a FROM table", string(*mt.defaultQuery))
+	require.Equal(t, "a", mt.cols)
+	require.Equal(t, 1, len(mt.rowPostProcessors))
+	require.Equal(t, 1, len(mt.rowSubQueries))
+	require.Equal(t, 1, len(mt.mappings))
+
+	m2, err := m.Extend([]string{"b", "c"},
+		Mappings{"b": {Path: []string{"sub_obj"}}},
+		Query(`FROM other_table`),
+		UseDecimals(false),
+		&dummyRowPostProcessor{},
+		NewSubQuery("x", `SELECT * FROM other`, nil, nil, false),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, m2)
+	m2t := m2.(*mapper)
+	require.Equal(t, m2, m2t)
+	require.Equal(t, "SELECT a,b,c FROM other_table", string(*m2t.defaultQuery))
+	require.Equal(t, "a,b,c", m2t.cols)
+	require.Equal(t, 2, len(m2t.rowPostProcessors))
+	require.Equal(t, 2, len(m2t.rowSubQueries))
+	require.Equal(t, 2, len(m2t.mappings))
+	require.False(t, m2t.useDecimals)
+
+	_, err = m.Extend(nil, nil, Query(`FROM other_table`), Query(`FROM other_table`))
+	require.Error(t, err)
+
+	m, err = NewMapper("", nil)
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	m2, err = m.Extend([]string{"a", "b"}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, m2)
+	m2t = m2.(*mapper)
+	require.Equal(t, m2, m2t)
+	require.Equal(t, "a,b", m2t.cols)
+}
+
 func hasProperties(obj map[string]any, keys ...string) bool {
 	for _, key := range keys {
 		if _, ok := obj[key]; !ok {

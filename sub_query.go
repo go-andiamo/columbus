@@ -14,6 +14,10 @@ import (
 type SubQuery interface {
 	Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error
 	ProvidesProperty() string
+}
+
+type internalSubQuery interface {
+	SubQuery
 	getQuery() string
 }
 
@@ -86,7 +90,7 @@ type sliceSubQuery struct {
 	subQuery
 }
 
-var _ SubQuery = &sliceSubQuery{}
+var _ internalSubQuery = (*sliceSubQuery)(nil)
 
 func (sq *sliceSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
@@ -108,7 +112,7 @@ type objectSubQuery struct {
 	subQuery
 }
 
-var _ SubQuery = &objectSubQuery{}
+var _ internalSubQuery = (*objectSubQuery)(nil)
 
 func (sq *objectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
@@ -130,7 +134,7 @@ type exactObjectSubQuery struct {
 	subQuery
 }
 
-var _ SubQuery = &exactObjectSubQuery{}
+var _ internalSubQuery = (*exactObjectSubQuery)(nil)
 
 func (sq *exactObjectSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
@@ -151,7 +155,7 @@ type mergeSubQuery struct {
 	subQuery
 }
 
-var _ SubQuery = &mergeSubQuery{}
+var _ internalSubQuery = (*mergeSubQuery)(nil)
 
 func (sq *mergeSubQuery) Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error {
 	rm := sq.rowMapper(sq)
@@ -187,7 +191,7 @@ func (sq *subQuery) getArgs(row map[string]any) ([]any, error) {
 	return result, nil
 }
 
-func (sq *subQuery) rowMapper(asq SubQuery) *mapper {
+func (sq *subQuery) rowMapper(asq internalSubQuery) *mapper {
 	sq.mutex.RLock()
 	if sq.mapper != nil {
 		sq.mutex.RUnlock()

@@ -11,14 +11,34 @@ import (
 	"sync"
 )
 
+// Mapper is the main row mapper interface
 type Mapper interface {
+	// Rows reads all rows and maps them into a slice of `map[string]any`
 	Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) ([]map[string]any, error)
+	// FirstRow reads just the first row and maps it into a `map[string]any`
+	//
+	// if there are no rows, returns nil
 	FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error)
+	// ExactlyOneRow reads exactly one row and maps it into a `map[string]any`
+	//
+	// if there are no rows, returns error sql.ErrNoRows
 	ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error)
+	// WriteRows reads all rows and writes them as JSON to the supplied writer
 	WriteRows(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
+	// WriteFirstRow reads just the first row and writes it as JSON to the supplied writer
+	//
+	// if there are no rows, nothing is written to the writer
 	WriteFirstRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
+	// WriteExactlyOneRow reads exactly one row and writes it as JSON to the supplied writer
+	//
+	// if there are no rows, returns error sql.ErrNoRows (and nothing is written to the writer)
 	WriteExactlyOneRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
+	// Iterate iterates over the rows and calls the supplied handler with each row
+	//
+	// iteration stops at the end of rows - or an error is encountered - or the supplied handler returns false for `cont` (continue)
 	Iterate(ctx context.Context, sqli SqlInterface, args []any, handler func(row map[string]any) (cont bool, err error), options ...any) error
+	// Extend creates a new Mapper adding the specified columns, mappings and options
+	Extend(addColumns []string, mappings Mappings, options ...any) (Mapper, error)
 }
 
 // UseDecimals is an option that determines whether float/numeric/decimal columns should be mapped as decimal.Decimal properties
@@ -27,13 +47,15 @@ type Mapper interface {
 type UseDecimals bool
 
 // NewMapper creates a new row mapper
-func NewMapper[T string | []string](cols T, mappings Mappings, options ...any) (Mapper, error) {
-	return newMapper(cols, mappings, options...)
+//
+// options can be any of: Query, RowPostProcessor, SubQuery or UseDecimals
+func NewMapper[T string | []string](columns T, mappings Mappings, options ...any) (Mapper, error) {
+	return newMapper(columns, mappings, options...)
 }
 
 // MustNewMapper is the same as NewMapper, except it panics on error
-func MustNewMapper[T string | []string](cols T, mappings Mappings, options ...any) Mapper {
-	m, err := NewMapper[T](cols, mappings, options...)
+func MustNewMapper[T string | []string](columns T, mappings Mappings, options ...any) Mapper {
+	m, err := NewMapper[T](columns, mappings, options...)
 	if err != nil {
 		panic(err)
 	}
@@ -67,7 +89,7 @@ type mapper struct {
 	defaultQuery      *Query
 	useDecimals       bool
 	// subQuery is set by parent sub-query
-	subQuery SubQuery
+	subQuery internalSubQuery
 	subPath  []string
 }
 
@@ -252,6 +274,31 @@ func (m *mapper) Iterate(ctx context.Context, sqli SqlInterface, args []any, han
 	return err
 }
 
+func (m *mapper) Extend(addColumns []string, mappings Mappings, options ...any) (Mapper, error) {
+	result := &mapper{
+		mappings:          m.copyMappings(),
+		cols:              m.cols,
+		rowPostProcessors: append([]RowPostProcessor{}, m.rowPostProcessors...),
+		rowSubQueries:     append([]SubQuery{}, m.rowSubQueries...),
+		defaultQuery:      m.defaultQuery,
+		useDecimals:       m.useDecimals,
+	}
+	if len(addColumns) != 0 {
+		if result.cols != "" {
+			result.cols += "," + strings.Join(addColumns, ",")
+		} else {
+			result.cols = strings.Join(addColumns, ",")
+		}
+	}
+	for k, v := range mappings {
+		result.mappings[k] = v
+	}
+	if err := result.addOptions(options...); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions PropertyExclusions, err error) {
 	mappings = m.mappings
 	mappingsCopied := false
@@ -318,6 +365,7 @@ func (m *mapper) copyMappings() Mappings {
 }
 
 func (m *mapper) addOptions(options ...any) error {
+	seenQuery := false
 	for _, o := range options {
 		if o != nil {
 			switch option := o.(type) {
@@ -326,9 +374,10 @@ func (m *mapper) addOptions(options ...any) error {
 			case SubQuery:
 				m.rowSubQueries = append(m.rowSubQueries, option)
 			case Query:
-				if m.defaultQuery != nil {
+				if seenQuery {
 					return errors.New("cannot use multiple default queries")
 				}
+				seenQuery = true
 				qStr := Query("SELECT " + m.cols + " " + string(option))
 				m.defaultQuery = &qStr
 			case UseDecimals:
