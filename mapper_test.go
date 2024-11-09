@@ -14,13 +14,13 @@ import (
 var ctx = context.Background()
 
 func TestNewMapper(t *testing.T) {
-	m, err := NewMapper("a,b,c", nil)
+	m, err := NewMapper("a,b,c")
 	require.NoError(t, err)
 	require.NotNil(t, m)
 	mt := m.(*mapper)
 	require.Equal(t, "a,b,c", mt.cols)
 
-	m, err = NewMapper([]string{"a", "b", "c"}, nil)
+	m, err = NewMapper([]string{"a", "b", "c"})
 	require.NoError(t, err)
 	require.NotNil(t, m)
 	mt = m.(*mapper)
@@ -37,59 +37,64 @@ func TestMustNewMapper(t *testing.T) {
 }
 
 func TestNewMapper_WithOptions(t *testing.T) {
-	_, err := NewMapper("a,b,c", nil, nil)
+	_, err := NewMapper("a,b,c")
 	require.NoError(t, err)
 
-	drpp := &dummyRowPostProcessor{}
-	m, err := NewMapper("a,b,c", nil, drpp)
+	m, err := NewMapper("a,b,c", Mappings{"a": {}, "b": {}})
 	require.NoError(t, err)
 	mt := m.(*mapper)
+	require.Equal(t, 2, len(mt.mappings))
+
+	drpp := &dummyRowPostProcessor{}
+	m, err = NewMapper("a,b,c", drpp)
+	require.NoError(t, err)
+	mt = m.(*mapper)
 	require.Equal(t, 1, len(mt.rowPostProcessors))
 
 	sq := NewSubQuery("", "", nil, nil, false)
-	m, err = NewMapper("a,b,c", nil, sq)
+	m, err = NewMapper("a,b,c", sq)
 	require.NoError(t, err)
 	mt = m.(*mapper)
 	require.Equal(t, 1, len(mt.rowSubQueries))
 
 	q := Query(`FROM table WHERE id = ?`)
-	m, err = NewMapper("a,b,c", nil, q)
+	m, err = NewMapper("a,b,c", q)
 	require.NoError(t, err)
 	mt = m.(*mapper)
 	require.NotNil(t, mt.defaultQuery)
 
-	m, err = NewMapper("a,b,c", nil)
+	m, err = NewMapper("a,b,c")
 	require.NoError(t, err)
 	mt = m.(*mapper)
 	require.True(t, mt.useDecimals)
-	m, err = NewMapper("a,b,c", nil, UseDecimals(false))
+	m, err = NewMapper("a,b,c", UseDecimals(false))
 	require.NoError(t, err)
 	mt = m.(*mapper)
 	require.False(t, mt.useDecimals)
 
-	_, err = NewMapper("a,b,c", nil, "not a valid option")
+	_, err = NewMapper("a,b,c", "not a valid option")
 	require.Error(t, err)
 	require.Equal(t, "unknown option type: string", err.Error())
 }
 
 func TestNewMapper_WithOptions_ErrorsWithMultipleDefaultQueries(t *testing.T) {
 	q := Query(`FROM table WHERE id = ?`)
-	_, err := NewMapper("a,b,c", nil, q)
+	_, err := NewMapper("a,b,c", q)
 	require.NoError(t, err)
-	_, err = NewMapper("a,b,c", nil, q, q)
+	_, err = NewMapper("a,b,c", q, q)
 	require.Error(t, err)
 	require.Equal(t, "cannot use multiple default queries", err.Error())
 }
 
 func TestMapper_rowMapOptions_query(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, nil)
+	m, err := newMapper("a,b,c")
 	require.NoError(t, err)
 	require.Nil(t, m.defaultQuery)
 	_, _, _, _, _, _, err = m.rowMapOptions()
 	require.Error(t, err)
 	require.Equal(t, "no default query", err.Error())
 
-	m, err = newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err = newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 	require.NotNil(t, m.defaultQuery)
 	q, _, _, _, _, _, err := m.rowMapOptions()
@@ -110,7 +115,7 @@ func TestMapper_rowMapOptions_query(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "SELECT a,b,c FROM other_table WHERE other_id = ? ORDER BY id", q)
 
-	m, err = newMapper("a,b,c", nil, nil)
+	m, err = newMapper("a,b,c")
 	require.NoError(t, err)
 	_, _, _, _, _, _, err = m.rowMapOptions(addClause)
 	require.Error(t, err)
@@ -141,7 +146,7 @@ func TestMapper_rowMapOptions_mappings(t *testing.T) {
 }
 
 func TestMapper_rowMapOptions_postProcesses(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 	require.NotNil(t, m.defaultQuery)
 	_, _, postProcesses, _, _, _, err := m.rowMapOptions()
@@ -158,7 +163,7 @@ func TestMapper_rowMapOptions_postProcesses(t *testing.T) {
 }
 
 func TestMapper_rowMapOptions_subQueries(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 	require.NotNil(t, m.defaultQuery)
 	_, _, _, subQueries, _, _, err := m.rowMapOptions()
@@ -173,7 +178,7 @@ func TestMapper_rowMapOptions_subQueries(t *testing.T) {
 }
 
 func TestMapper_rowMapOptions_excludeProperties(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 	require.NotNil(t, m.defaultQuery)
 	_, _, _, _, exclusions, _, err := m.rowMapOptions()
@@ -199,7 +204,7 @@ func TestMapper_rowMapOptions_excludeProperties(t *testing.T) {
 }
 
 func TestMapper_rowMapOptions_limiter(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 	require.NotNil(t, m.defaultQuery)
 	_, _, _, _, _, limiter, err := m.rowMapOptions()
@@ -223,7 +228,7 @@ func (n *testLimiter) LimitReached(rowCount int) bool {
 }
 
 func TestMapper_Rows(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -240,7 +245,7 @@ func TestMapper_Rows(t *testing.T) {
 }
 
 func TestMapper_Rows_Limited(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -257,7 +262,7 @@ func TestMapper_Rows_Limited(t *testing.T) {
 }
 
 func TestMapper_Rows_SqlErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -297,7 +302,7 @@ func TestMapper_Rows_MapRowErrors(t *testing.T) {
 }
 
 func TestMapper_FirstRow_SqlErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -320,7 +325,7 @@ func TestMapper_ExactlyOneRow(t *testing.T) {
 		_ = db.Close()
 	}()
 
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c"}).AddRow(
@@ -339,7 +344,7 @@ func TestMapper_ExactlyOneRow(t *testing.T) {
 }
 
 func TestMapper_ExactlyOneRow_SqlErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -356,7 +361,7 @@ func TestMapper_ExactlyOneRow_SqlErrors(t *testing.T) {
 }
 
 func TestMapper_Rows_OptionsErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 
 	_, err = m.Rows(ctx, nil, nil, "not a valid option")
@@ -365,7 +370,7 @@ func TestMapper_Rows_OptionsErrors(t *testing.T) {
 }
 
 func TestMapper_FirstRow_OptionsErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 
 	_, err = m.FirstRow(ctx, nil, nil, "not a valid option")
@@ -374,7 +379,7 @@ func TestMapper_FirstRow_OptionsErrors(t *testing.T) {
 }
 
 func TestMapper_ExactlyOneRow_OptionsErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 
 	_, err = m.ExactlyOneRow(ctx, nil, nil, "not a valid option")
@@ -389,7 +394,7 @@ func TestMapper_FirstRow(t *testing.T) {
 		_ = db.Close()
 	}()
 
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c"}).AddRow(
@@ -414,7 +419,7 @@ func TestMapper_FirstRow_CalledTwice(t *testing.T) {
 		_ = db.Close()
 	}()
 
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value"))
@@ -437,7 +442,7 @@ func TestMapper_PropertyExclusions(t *testing.T) {
 	defer func() {
 		_ = db.Close()
 	}()
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c"}).AddRow("a value", "b value", "c value"))
@@ -602,7 +607,7 @@ func TestMapper_Mapping_PostProcess(t *testing.T) {
 }
 
 func TestMapper_SubQuery(t *testing.T) {
-	m, err := newMapper("a", nil,
+	m, err := newMapper("a",
 		Query(`FROM table`),
 		NewSubQuery("foo", `SELECT b FROM sub_table WHERE a = ?`, []string{"a"}, nil, false),
 	)
@@ -631,7 +636,7 @@ func TestMapper_SubQuery(t *testing.T) {
 }
 
 func TestMapper_SubQuery_Excluded(t *testing.T) {
-	m, err := newMapper("a", nil,
+	m, err := newMapper("a",
 		Query(`FROM table`),
 		NewSubQuery("foo", `SELECT b FROM sub_table WHERE a = ?`, []string{"a"}, nil, false),
 	)
@@ -656,7 +661,7 @@ func TestMapper_SubQuery_Excluded(t *testing.T) {
 }
 
 func TestMapper_SubQuery_SqlErrors(t *testing.T) {
-	m, err := newMapper("a", nil,
+	m, err := newMapper("a",
 		Query(`FROM table`),
 		NewSubQuery("foo", `SELECT b FROM sub_table WHERE a = ?`, []string{"a"}, nil, false),
 	)
@@ -698,7 +703,7 @@ func (rp *testRowPostProcessor) ProvidesProperty() string {
 }
 
 func TestMapper_RowPostProcessor(t *testing.T) {
-	m, err := newMapper("a", nil,
+	m, err := newMapper("a",
 		Query(`FROM table`),
 		&testRowPostProcessor{propertyName: "foo"},
 	)
@@ -724,7 +729,7 @@ func TestMapper_RowPostProcessor(t *testing.T) {
 }
 
 func TestMapper_RowPostProcessor_Excluded(t *testing.T) {
-	m, err := newMapper("a", nil,
+	m, err := newMapper("a",
 		Query(`FROM table`),
 		&testRowPostProcessor{propertyName: "foo"},
 	)
@@ -749,7 +754,7 @@ func TestMapper_RowPostProcessor_Excluded(t *testing.T) {
 }
 
 func TestMapper_RowPostProcessor_SqlErrors(t *testing.T) {
-	m, err := newMapper("a", nil,
+	m, err := newMapper("a",
 		Query(`FROM table`),
 		&testRowPostProcessor{propertyName: "foo"},
 	)
@@ -770,7 +775,7 @@ func TestMapper_RowPostProcessor_SqlErrors(t *testing.T) {
 }
 
 func TestMapper_WriteRows(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -789,7 +794,7 @@ func TestMapper_WriteRows(t *testing.T) {
 }
 
 func TestMapper_WriteRows_Limited(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -808,7 +813,7 @@ func TestMapper_WriteRows_Limited(t *testing.T) {
 }
 
 func TestMapper_WriteRows_SqlErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -825,7 +830,7 @@ func TestMapper_WriteRows_SqlErrors(t *testing.T) {
 }
 
 func TestMapper_WriteRows_OptionsErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 
 	err = m.WriteRows(ctx, nil, nil, nil, "not a valid option")
@@ -834,7 +839,7 @@ func TestMapper_WriteRows_OptionsErrors(t *testing.T) {
 }
 
 func TestMapper_WriteFirstRow(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -853,7 +858,7 @@ func TestMapper_WriteFirstRow(t *testing.T) {
 }
 
 func TestMapper_WriteFirstRow_SqlErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -870,7 +875,7 @@ func TestMapper_WriteFirstRow_SqlErrors(t *testing.T) {
 }
 
 func TestMapper_WriteFirstRow_OptionsErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 
 	err = m.WriteFirstRow(ctx, nil, nil, nil, "not a valid option")
@@ -879,7 +884,7 @@ func TestMapper_WriteFirstRow_OptionsErrors(t *testing.T) {
 }
 
 func TestMapper_WriteExactlyOneRow(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -898,7 +903,7 @@ func TestMapper_WriteExactlyOneRow(t *testing.T) {
 }
 
 func TestMapper_WriteExactlyOneRow_ErrorNoRow(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -917,7 +922,7 @@ func TestMapper_WriteExactlyOneRow_ErrorNoRow(t *testing.T) {
 }
 
 func TestMapper_WriteExactlyOneRow_SqlErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -934,7 +939,7 @@ func TestMapper_WriteExactlyOneRow_SqlErrors(t *testing.T) {
 }
 
 func TestMapper_WriteExactlyOneRow_OptionsErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 
 	err = m.WriteExactlyOneRow(ctx, nil, nil, nil, "not a valid option")
@@ -943,7 +948,7 @@ func TestMapper_WriteExactlyOneRow_OptionsErrors(t *testing.T) {
 }
 
 func TestMapper_Iterate(t *testing.T) {
-	m, err := newMapper("a", nil, Query(`FROM table`))
+	m, err := newMapper("a", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -964,7 +969,7 @@ func TestMapper_Iterate(t *testing.T) {
 }
 
 func TestMapper_Iterate_OptionsErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table WHERE id = ?`))
+	m, err := newMapper("a,b,c", Query(`FROM table WHERE id = ?`))
 	require.NoError(t, err)
 
 	err = m.Iterate(ctx, nil, nil, nil, "not a valid option")
@@ -973,7 +978,7 @@ func TestMapper_Iterate_OptionsErrors(t *testing.T) {
 }
 
 func TestMapper_Iterate_SqlErrors(t *testing.T) {
-	m, err := newMapper("a,b,c", nil, Query(`FROM table`))
+	m, err := newMapper("a,b,c", Query(`FROM table`))
 	require.NoError(t, err)
 
 	db, mock, err := sqlmock.New()
@@ -1051,7 +1056,7 @@ func TestMapper_Extend(t *testing.T) {
 	_, err = m.Extend(nil, nil, Query(`FROM other_table`), Query(`FROM other_table`))
 	require.Error(t, err)
 
-	m, err = NewMapper("", nil)
+	m, err = NewMapper("")
 	require.NoError(t, err)
 	require.NotNil(t, m)
 	m2, err = m.Extend([]string{"a", "b"}, nil)

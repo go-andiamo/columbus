@@ -48,23 +48,25 @@ type UseDecimals bool
 
 // NewMapper creates a new row mapper
 //
-// options can be any of: Query, RowPostProcessor, SubQuery or UseDecimals
-func NewMapper[T string | []string](columns T, mappings Mappings, options ...any) (Mapper, error) {
-	return newMapper(columns, mappings, options...)
+// options can be any of: Mappings, Query, RowPostProcessor, SubQuery or UseDecimals
+func NewMapper[T string | []string](columns T, options ...any) (Mapper, error) {
+	return newMapper(columns, options...)
 }
 
 // MustNewMapper is the same as NewMapper, except it panics on error
-func MustNewMapper[T string | []string](columns T, mappings Mappings, options ...any) Mapper {
-	m, err := NewMapper[T](columns, mappings, options...)
+//
+// options can be any of: Mappings, Query, RowPostProcessor, SubQuery or UseDecimals
+func MustNewMapper[T string | []string](columns T, options ...any) Mapper {
+	m, err := NewMapper[T](columns, options...)
 	if err != nil {
 		panic(err)
 	}
 	return m
 }
 
-func newMapper(cols any, mappings Mappings, options ...any) (*mapper, error) {
+func newMapper(cols any, options ...any) (*mapper, error) {
 	result := &mapper{
-		mappings:    mappings,
+		mappings:    Mappings{},
 		useDecimals: true,
 	}
 	switch ct := cols.(type) {
@@ -395,6 +397,10 @@ func (m *mapper) addOptions(options ...any) error {
 				m.defaultQuery = &qStr
 			case UseDecimals:
 				m.useDecimals = bool(option)
+			case Mappings:
+				for k, v := range option {
+					m.mappings[k] = v
+				}
 			default:
 				return fmt.Errorf("unknown option type: %T", o)
 			}

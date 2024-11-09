@@ -27,7 +27,7 @@ import (
 )
 
 func ReadRows(ctx context.Context, db *sql.DB, tableName string) ([]map[string]any, error) {
-    return columbus.MustNewMapper("*", nil, columbus.Query("FROM "+tableName)).
+    return columbus.MustNewMapper("*", columbus.Query("FROM "+tableName)).
         Rows(ctx, db, nil)
 }
 ```
@@ -42,7 +42,7 @@ import (
     "github.com/go-andiamo/columbus"
 )
 
-var mapper = columbus.MustNewMapper("*", nil, columbus.Query(`FROM people`))
+var mapper = columbus.MustNewMapper("*", columbus.Query(`FROM people`))
 
 func ReadAll(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
     return mapper.Rows(ctx, db, nil)
@@ -50,5 +50,53 @@ func ReadAll(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
 
 func ReadById(ctx context.Context, db *sql.DB, id any) (map[string]any, error) {
     return mapper.ExactlyOneRow(ctx, db, []any{id}, columbus.AddClause(`WHERE id = ?`))
+}
+```
+
+Using mappings to add a property...
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "github.com/go-andiamo/columbus"
+    "strings"
+)
+
+func ReadRowsWithInitials(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
+    return columbus.MustNewMapper("given_name,family_name",
+        columbus.Mappings{
+            "family_name": {PostProcess: func(ctx context.Context, sqli columbus.SqlInterface, row map[string]any, value any) (bool, any, error) {
+                givenName := row["given_name"].(string)
+                familyName := row["family_name"].(string)
+                row["initials"] = strings.ToUpper(givenName[:1] + "." + familyName[:1] + ".")
+                return false, nil, nil
+            }},
+        },
+        columbus.Query("FROM people")).Rows(ctx, db, nil)
+}
+```
+
+Using row post processor to add a property...
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "github.com/go-andiamo/columbus"
+    "strings"
+)
+
+func ReadRowsWithInitials(ctx context.Context, db *sql.DB) ([]map[string]any, error) {
+    return columbus.MustNewMapper("given_name,family_name",
+        columbus.RowPostProcessorFunc(func(ctx context.Context, sqli columbus.SqlInterface, row map[string]any) error {
+            givenName := row["given_name"].(string)
+            familyName := row["family_name"].(string)
+            row["initials"] = strings.ToUpper(givenName[:1] + "." + familyName[:1] + ".")
+            return nil
+        }),
+        columbus.Query("FROM people")).Rows(ctx, db, nil)
 }
 ```

@@ -12,7 +12,14 @@ import (
 //
 // Any SubQuery(s) passed to Mapper are executed after the row is mapped
 type SubQuery interface {
+	// Execute executes the SubQuery
 	Execute(ctx context.Context, sqli SqlInterface, row map[string]any, exclusions PropertyExclusions) error
+	// ProvidesProperty indicates that the SubQuery provides a specific named property
+	// which is used to check if the property should be excluded
+	//
+	// if returns a property name and that property is excluded - the SubQuery is not executed
+	//
+	// if returns an empty string - the SubQuery is always executed
 	ProvidesProperty() string
 }
 
