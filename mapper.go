@@ -66,8 +66,9 @@ func MustNewMapper[T string | []string](columns T, options ...any) Mapper {
 
 func newMapper(cols any, options ...any) (*mapper, error) {
 	result := &mapper{
-		mappings:    Mappings{},
-		useDecimals: true,
+		mappings:        Mappings{},
+		errorTranslator: defaultErrorTranslator,
+		useDecimals:     true,
 	}
 	switch ct := cols.(type) {
 	case string:
@@ -90,6 +91,7 @@ type mapper struct {
 	rowSubQueries     []SubQuery
 	defaultQuery      *Query
 	useDecimals       bool
+	errorTranslator   ErrorTranslator
 	// subQuery is set by parent sub-query
 	subQuery internalSubQuery
 	subPath  []string
@@ -98,13 +100,13 @@ type mapper struct {
 var _ Mapper = (*mapper)(nil)
 
 func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result []map[string]any, err error) {
-	query, mappings, postProcesses, subQueries, exclusions, limiter, err := m.rowMapOptions(options...)
+	query, mappings, postProcesses, subQueries, exclusions, limiter, errTranslator, err := m.rowMapOptions(options...)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := sqli.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, translateError(err, errTranslator)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -126,17 +128,17 @@ func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, option
 			}
 		}
 	}
-	return result, err
+	return result, translateError(err, errTranslator)
 }
 
 func (m *mapper) FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result map[string]any, err error) {
-	query, mappings, postProcesses, subQueries, exclusions, _, err := m.rowMapOptions(options...)
+	query, mappings, postProcesses, subQueries, exclusions, _, errTranslator, err := m.rowMapOptions(options...)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := sqli.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, translateError(err, errTranslator)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -147,17 +149,17 @@ func (m *mapper) FirstRow(ctx context.Context, sqli SqlInterface, args []any, op
 			result, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions)
 		}
 	}
-	return result, err
+	return result, translateError(err, errTranslator)
 }
 
 func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result map[string]any, err error) {
-	query, mappings, postProcesses, subQueries, exclusions, _, err := m.rowMapOptions(options...)
+	query, mappings, postProcesses, subQueries, exclusions, _, errTranslator, err := m.rowMapOptions(options...)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := sqli.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return nil, translateError(err, errTranslator)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -169,17 +171,17 @@ func (m *mapper) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []an
 			result, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions)
 		}
 	}
-	return result, err
+	return result, translateError(err, errTranslator)
 }
 
 func (m *mapper) WriteRows(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) (err error) {
-	query, mappings, postProcesses, subQueries, exclusions, limiter, err := m.rowMapOptions(options...)
+	query, mappings, postProcesses, subQueries, exclusions, limiter, errTranslator, err := m.rowMapOptions(options...)
 	if err != nil {
 		return err
 	}
 	rows, err := sqli.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return translateError(err, errTranslator)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -209,17 +211,17 @@ func (m *mapper) WriteRows(ctx context.Context, writer io.Writer, sqli SqlInterf
 		}
 		_, err = writer.Write([]byte("]"))
 	}
-	return err
+	return translateError(err, errTranslator)
 }
 
 func (m *mapper) WriteFirstRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) (err error) {
-	query, mappings, postProcesses, subQueries, exclusions, _, err := m.rowMapOptions(options...)
+	query, mappings, postProcesses, subQueries, exclusions, _, errTranslator, err := m.rowMapOptions(options...)
 	if err != nil {
 		return err
 	}
 	rows, err := sqli.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return translateError(err, errTranslator)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -233,17 +235,17 @@ func (m *mapper) WriteFirstRow(ctx context.Context, writer io.Writer, sqli SqlIn
 			}
 		}
 	}
-	return err
+	return translateError(err, errTranslator)
 }
 
 func (m *mapper) WriteExactlyOneRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) (err error) {
-	query, mappings, postProcesses, subQueries, exclusions, _, err := m.rowMapOptions(options...)
+	query, mappings, postProcesses, subQueries, exclusions, _, errTranslator, err := m.rowMapOptions(options...)
 	if err != nil {
 		return err
 	}
 	rows, err := sqli.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return translateError(err, errTranslator)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -258,17 +260,17 @@ func (m *mapper) WriteExactlyOneRow(ctx context.Context, writer io.Writer, sqli 
 			}
 		}
 	}
-	return err
+	return translateError(err, errTranslator)
 }
 
 func (m *mapper) Iterate(ctx context.Context, sqli SqlInterface, args []any, handler func(row map[string]any) (cont bool, err error), options ...any) (err error) {
-	query, mappings, postProcesses, subQueries, exclusions, _, err := m.rowMapOptions(options...)
+	query, mappings, postProcesses, subQueries, exclusions, _, errTranslator, err := m.rowMapOptions(options...)
 	if err != nil {
 		return err
 	}
 	rows, err := sqli.QueryContext(ctx, query, args...)
 	if err != nil {
-		return err
+		return translateError(err, errTranslator)
 	}
 	defer func() {
 		_ = rows.Close()
@@ -283,7 +285,7 @@ func (m *mapper) Iterate(ctx context.Context, sqli SqlInterface, args []any, han
 			}
 		}
 	}
-	return err
+	return translateError(err, errTranslator)
 }
 
 func (m *mapper) Extend(addColumns []string, mappings Mappings, options ...any) (Mapper, error) {
@@ -311,14 +313,15 @@ func (m *mapper) Extend(addColumns []string, mappings Mappings, options ...any) 
 	return result, nil
 }
 
-func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions PropertyExclusions, limiter Limiter, err error) {
+func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings, postProcesses []RowPostProcessor, subQueries []SubQuery, exclusions PropertyExclusions, limiter Limiter, errorTranslator ErrorTranslator, err error) {
 	mappings = m.mappings
 	mappingsCopied := false
 	exclusions = make([]PropertyExcluder, 0)
 	querySet := false
 	subQueries = append(subQueries, m.rowSubQueries...)
 	postProcesses = append(postProcesses, m.rowPostProcessors...)
-	limiter = &nullLimiter{}
+	limiter = defaultLimiter
+	errorTranslator = m.errorTranslator
 	if m.defaultQuery != nil {
 		querySet = true
 		query = string(*m.defaultQuery)
@@ -356,11 +359,13 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 				subQueries = append(subQueries, option)
 			case Limiter:
 				limiter = option
+			case ErrorTranslator:
+				errorTranslator = option
 			default:
 				if excf, ok := o.(func(string, []string) bool); ok {
 					exclusions = append(exclusions, ConditionalExclude(excf))
 				} else {
-					return "", nil, nil, nil, nil, nil, fmt.Errorf("unknown option type: %T", o)
+					return "", nil, nil, nil, nil, nil, nil, fmt.Errorf("unknown option type: %T", o)
 				}
 			}
 		}
@@ -368,7 +373,7 @@ func (m *mapper) rowMapOptions(options ...any) (query string, mappings Mappings,
 	if !querySet {
 		err = errors.New("no default query")
 	}
-	return query, mappings, postProcesses, subQueries, exclusions, limiter, err
+	return query, mappings, postProcesses, subQueries, exclusions, limiter, errorTranslator, err
 }
 
 func (m *mapper) copyMappings() Mappings {
@@ -397,6 +402,8 @@ func (m *mapper) addOptions(options ...any) error {
 				m.defaultQuery = &qStr
 			case UseDecimals:
 				m.useDecimals = bool(option)
+			case ErrorTranslator:
+				m.errorTranslator = option
 			case Mappings:
 				for k, v := range option {
 					m.mappings[k] = v
