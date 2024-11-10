@@ -10,7 +10,7 @@ type Limiter interface {
 
 type nullLimiter struct{}
 
-var _ Limiter = (*nullLimiter)(nil)
+var defaultLimiter Limiter = &nullLimiter{}
 
 func (n *nullLimiter) LimitReached(rowCount int) bool {
 	return false
