@@ -7,6 +7,7 @@ import (
 	"github.com/go-andiamo/columbus"
 	"github.com/go-sql-driver/mysql"
 	"github.com/shopspring/decimal"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"strings"
 	"testing"
@@ -15,12 +16,13 @@ import (
 
 const testTable = `test_table`
 
-func TestMysql(t *testing.T) {
+func TestMysql_Mapper(t *testing.T) {
 	db := createTestDatabase(cfg)
+	clearTables(t, db)
 	defer func() {
 		_ = db.Close()
 	}()
-	insert(db, map[string]any{
+	insert(t, db, map[string]any{
 		"col_a": nil,
 		"col_b": "bbb",
 		"col_c": time.Now(),
@@ -67,9 +69,56 @@ func TestMysql(t *testing.T) {
 	require.NotEmpty(t, row["sub"])
 }
 
+func TestMySql_StructMapper(t *testing.T) {
+	db := createTestDatabase(cfg)
+	clearTables(t, db)
+	defer func() {
+		_ = db.Close()
+	}()
+	insert(t, db, map[string]any{
+		"col_a": nil,
+		"col_b": "bbb",
+		"col_c": time.Now(),
+		"col_d": "TEXT",
+		"col_e": `{"foo":"bar"}`,
+		"col_g": 16.16,
+		"col_h": true,
+		"col_i": 16,
+		"col_j": 16.16,
+	})
+
+	type EmbedStruct struct {
+		ColE string `sql:"col_e"`
+	}
+	type nums struct {
+		ColG decimal.Decimal `sql:"col_g"`
+		ColI sql.NullInt64   `sql:"col_i"`
+		ColJ sql.NullFloat64 `sql:"col_j"`
+		ColK sql.NullInt64   `sql:"col_k"`
+		ColL sql.NullInt64   `sql:"col_l"`
+		ColM sql.NullFloat64 `sql:"col_m"`
+		ColN sql.NullBool    `sql:"col_n"`
+	}
+	type rowStruct struct {
+		ColA sql.NullString `sql:"col_a"`
+		ColB sql.NullString `sql:"col_b"`
+		ColC sql.NullTime   `sql:"col_c"`
+		ColD sql.NullString `sql:"col_d"`
+		ColH bool           `sql:"col_h"`
+		EmbedStruct
+		Nums nums
+	}
+	m, err := columbus.NewStructMapper[rowStruct](`*`, columbus.Query(`FROM `+testTable))
+	require.NoError(t, err)
+
+	rows, err := m.Rows(context.Background(), db, nil)
+	require.NoError(t, err)
+	assert.Len(t, rows, 1)
+}
+
 var cfg = config{
 	Host:     "localhost",
-	Port:     52717,
+	Port:     55000,
 	Username: "root",
 	Password: "root",
 	Name:     "test_db",
@@ -83,7 +132,13 @@ type config struct {
 	Name     string
 }
 
-func insert(db *sql.DB, row map[string]any) {
+func clearTables(t *testing.T, db *sql.DB) {
+	if _, err := db.ExecContext(context.Background(), "DELETE FROM "+testTable); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func insert(t *testing.T, db *sql.DB, row map[string]any) {
 	cols := make([]string, 0, len(row))
 	args := make([]any, 0, len(row))
 	markers := make([]string, 0, len(row))
@@ -94,7 +149,7 @@ func insert(db *sql.DB, row map[string]any) {
 	}
 	query := `INSERT INTO ` + testTable + ` (` + strings.Join(cols, ",") + `) VALUES (` + strings.Join(markers, ",") + `)`
 	if _, err := db.ExecContext(context.Background(), query, args...); err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
 }
 
