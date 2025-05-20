@@ -5,6 +5,7 @@
 
 Columbus is a SQL row mapper that converts rows to a `map[string]any` - saving the need to scan rows into structs and then marshalling those structs as JSON.
 
+Whilst Colombus is primarily focused on reading database rows directly as JSON - it also provides the ability to map rows to structs - without the need to create tedious matching `.Scan()` args.
 ## Installation
 To install columbus, use go get:
 
@@ -14,9 +15,11 @@ To update columbus to the latest version, run:
 
     go get -u github.com/go-andiamo/columbus
 
-## Usage / Examples
+## Examples
 
-A basic example to map all columns from any table...
+<details>
+    <summary><strong>Basic example to map all columns from any table</strong></summary>
+
 ```go
 package main
 
@@ -32,7 +35,11 @@ func ReadRows(ctx context.Context, db *sql.DB, tableName string) ([]map[string]a
 }
 ```
 
-Re-using the same mapper to read all rows or a specific row...
+</details><br>
+
+<details>
+    <summary><strong>Re-using the same mapper to read all rows or a specific row</strong></summary>
+
 ```go
 package main
 
@@ -53,7 +60,11 @@ func ReadById(ctx context.Context, db *sql.DB, id any) (map[string]any, error) {
 }
 ```
 
-Using mappings to add a property...
+</details><br>
+
+<details>
+    <summary><strong>Using mappings to add a property</strong></summary>
+
 ```go
 package main
 
@@ -78,7 +89,11 @@ func ReadRowsWithInitials(ctx context.Context, db *sql.DB) ([]map[string]any, er
 }
 ```
 
-Using row post processor to add a property...
+</details><br>
+
+<details>
+    <summary><strong>Using row post processor to add a property</strong></summary>
+
 ```go
 package main
 
@@ -100,3 +115,31 @@ func ReadRowsWithInitials(ctx context.Context, db *sql.DB) ([]map[string]any, er
         columbus.Query("FROM people")).Rows(ctx, db, nil)
 }
 ```
+
+</details><br>
+
+<details>
+    <summary><strong>Struct mapping</strong></summary>
+
+```go
+package main
+
+import (
+    "context"
+    "database/sql"
+    "github.com/go-andiamo/columbus"
+)
+
+type Person struct {
+    FamilyName string `sql:"family_name"`
+    GivenName string  `sql:"given_name"`
+}
+
+var PersonMapper = columbus.MustNewStructMapper[Person]("given_name,family_name", columbus.Query("FROM people"))
+
+func GetPeople(ctx context.Context, db *sql.DB, args ...any) ([]Person, error) {
+    return PersonMapper.Rows(ctx, db, args)
+}
+```
+
+</details><br>
