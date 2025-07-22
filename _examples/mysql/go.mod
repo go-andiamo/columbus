@@ -1,6 +1,6 @@
 module mysql
 
-go 1.22.4
+go 1.24.1
 
 require (
 	github.com/go-andiamo/columbus v0.0.0

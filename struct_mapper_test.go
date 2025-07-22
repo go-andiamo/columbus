@@ -128,38 +128,51 @@ func TestStructMapper_rowMapOptions(t *testing.T) {
 		&testPostProcessor[testStruct]{})
 	require.NotNil(t, sm)
 	raw := sm.(*structMapper[testStruct])
-	query, postProcessors, limiter, err := raw.rowMapOptions([]any{
+	et := &testErrorTranslator{}
+	query, postProcessors, limiter, translator, err := raw.rowMapOptions([]any{
 		Query("FROM table2"), AddClause("WHERE id = ?"),
 		&testPostProcessor[testStruct]{},
 		defaultLimiter,
+		et,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "SELECT foo,bar FROM table2 WHERE id = ?", query)
 	assert.Len(t, postProcessors, 2)
 	assert.NotNil(t, limiter)
+	require.NotNil(t, translator)
+	require.Equal(t, et, translator)
+
+	sm = MustNewStructMapper[testStruct](`foo,bar`,
+		Query("FROM table"),
+		et)
+	require.NotNil(t, sm)
+	raw = sm.(*structMapper[testStruct])
+	_, _, _, translator, err = raw.rowMapOptions(nil)
+	require.NoError(t, err)
+	require.Equal(t, et, translator)
 }
 
 func TestStructMapper_rowMapOptions_Errors(t *testing.T) {
 	sm := MustNewStructMapper[testStruct](`foo,bar`)
 	require.NotNil(t, sm)
 	raw := sm.(*structMapper[testStruct])
-	_, _, _, err := raw.rowMapOptions([]any{
+	_, _, _, _, err := raw.rowMapOptions([]any{
 		AddClause("WHERE id = ?"),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "add clause must have a query set")
 
-	_, _, _, err = raw.rowMapOptions([]any{})
+	_, _, _, _, err = raw.rowMapOptions([]any{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no default query")
 
-	_, _, _, err = raw.rowMapOptions([]any{
+	_, _, _, _, err = raw.rowMapOptions([]any{
 		Query(" ,extra_col FROM table"),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot forge extra columns using Query")
 
-	_, _, _, err = raw.rowMapOptions([]any{
+	_, _, _, _, err = raw.rowMapOptions([]any{
 		"not a valid option",
 	})
 	require.Error(t, err)
@@ -554,6 +567,154 @@ func TestStructMapper_ExactlyOneRow_ErrorPostProcessor(t *testing.T) {
 	require.NotNil(t, sm)
 	_, err = sm.ExactlyOneRow(context.Background(), db, nil)
 	require.Error(t, err)
+}
+
+func TestStructMapper_Iterator(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"foo", "bar"}).
+		AddRow("FOO value", "bar value").
+		AddRow("FOO value 2", "bar value 2"))
+	sm, err := NewStructMapper[testStruct](`foo,bar`,
+		Query("FROM table"),
+		UseTagName("db"),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sm)
+	items := make([]testStruct, 0)
+	indices := make([]int, 0)
+	for i, item := range sm.Iterator(context.Background(), db, nil) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 2)
+	require.Equal(t, "FOO value", items[0].Foo)
+	require.Equal(t, "FOO value 2", items[1].Foo)
+	require.Equal(t, "bar value", items[0].Bar)
+	require.Equal(t, "bar value 2", items[1].Bar)
+	require.Len(t, indices, 2)
+	require.Equal(t, []int{0, 1}, indices)
+}
+
+func TestStructMapper_Iterator_Errors(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("fooey"))
+	sm, err := NewStructMapper[testStruct](`foo,bar`,
+		Query("FROM table"),
+		UseTagName("db"),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sm)
+	items := make([]testStruct, 0)
+	indices := make([]int, 0)
+	eh := &errorCapturer{}
+	for i, item := range sm.Iterator(context.Background(), db, nil, eh) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 0)
+	require.Len(t, indices, 0)
+	require.Len(t, eh.errs, 1)
+	require.Equal(t, "fooey", eh.errs[0].Error())
+}
+
+type errorCapturer struct {
+	errs []error
+}
+
+var _ ErrorTranslator = &errorCapturer{}
+
+func (e *errorCapturer) Translate(err error) error {
+	e.errs = append(e.errs, err)
+	return nil
+}
+
+func TestStructMapper_Iterator_ErrorPostProcessor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"foo", "bar"}).
+		AddRow("FOO value", "bar value").
+		AddRow("FOO value 2", "bar value 2"))
+	sm, err := NewStructMapper[testStruct](`foo,bar`,
+		Query("FROM table"),
+		UseTagName("db"),
+		&testErrorPostProcessor[testStruct]{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sm)
+	items := make([]testStruct, 0)
+	indices := make([]int, 0)
+	for i, item := range sm.Iterator(context.Background(), db, nil) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 0)
+	require.Len(t, indices, 0)
+}
+
+func TestStructMapper_Iterator_ErrorPostProcessor_Swallowed(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"foo", "bar"}).
+		AddRow("FOO value", "bar value").
+		AddRow("FOO value 2", "bar value 2"))
+	sm, err := NewStructMapper[testStruct](`foo,bar`,
+		Query("FROM table"),
+		UseTagName("db"),
+		&testErrorPostProcessor[testStruct]{},
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sm)
+	items := make([]testStruct, 0)
+	indices := make([]int, 0)
+	eh := &errorCapturer{}
+	for i, item := range sm.Iterator(context.Background(), db, nil, eh) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 0)
+	require.Len(t, indices, 0)
+	require.Len(t, eh.errs, 2)
+}
+
+func TestStructMapper_Iterator_WithLimiter(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"foo", "bar"}).
+		AddRow("FOO value", "bar value").
+		AddRow("FOO value 2", "bar value 2"))
+	sm, err := NewStructMapper[testStruct](`foo,bar`,
+		Query("FROM table"),
+		UseTagName("db"),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sm)
+	items := make([]testStruct, 0)
+	indices := make([]int, 0)
+	limiter := &testLimiter{limit: 1}
+	for i, item := range sm.Iterator(context.Background(), db, nil, limiter) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 1)
+	require.Len(t, indices, 1)
+	require.Equal(t, []int{0}, indices)
 }
 
 func TestIsScannable(t *testing.T) {

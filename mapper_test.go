@@ -1099,6 +1099,135 @@ func TestMapper_Iterate_MapRowErrors(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestMapper_Iterator(t *testing.T) {
+	m, err := newMapper("a", Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+	items := make([]map[string]any, 0)
+	indices := make([]int, 0)
+	for i, item := range m.Iterator(context.Background(), db, nil) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 2)
+	require.Equal(t, "a value", items[0]["a"])
+	require.Equal(t, "a value 2", items[1]["a"])
+	require.Len(t, indices, 2)
+	require.Equal(t, []int{0, 1}, indices)
+}
+
+func TestMapper_Iterator_Errors(t *testing.T) {
+	m, err := newMapper("a", Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnError(errors.New("fooey"))
+	items := make([]map[string]any, 0)
+	indices := make([]int, 0)
+	eh := &errorCapturer{}
+	for i, item := range m.Iterator(context.Background(), db, nil, eh) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 0)
+	require.Len(t, indices, 0)
+	require.Len(t, eh.errs, 1)
+	require.Equal(t, "fooey", eh.errs[0].Error())
+}
+
+func TestMapper_Iterator_MapRowErrors(t *testing.T) {
+	m, err := newMapper("a", Mappings{
+		"a": {
+			PostProcess: func(ctx context.Context, sqli SqlInterface, row map[string]any, value any) (bool, any, error) {
+				return false, nil, errors.New("fooey")
+			},
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+	items := make([]map[string]any, 0)
+	indices := make([]int, 0)
+	eh := &testErrorTranslator{}
+	for i, item := range m.Iterator(context.Background(), db, nil, eh) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 0)
+	require.Len(t, indices, 0)
+}
+
+func TestMapper_Iterator_MapRowErrors_Swallowed(t *testing.T) {
+	m, err := newMapper("a", Mappings{
+		"a": {
+			PostProcess: func(ctx context.Context, sqli SqlInterface, row map[string]any, value any) (bool, any, error) {
+				return false, nil, errors.New("fooey")
+			},
+		},
+	}, Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+	items := make([]map[string]any, 0)
+	indices := make([]int, 0)
+	eh := &errorCapturer{}
+	for i, item := range m.Iterator(context.Background(), db, nil, eh) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 0)
+	require.Len(t, indices, 0)
+	require.Len(t, eh.errs, 2)
+	require.Equal(t, "fooey", eh.errs[0].Error())
+}
+
+func TestMapper_Iterator_WithLimiter(t *testing.T) {
+	m, err := newMapper("a", Query(`FROM table`))
+	require.NoError(t, err)
+
+	db, mock, err := sqlmock.New()
+	_ = mock
+	require.NoError(t, err)
+	defer func() {
+		_ = db.Close()
+	}()
+	mock.ExpectQuery("").WillReturnRows(sqlmock.NewRows([]string{"a"}).AddRow("a value").AddRow("a value 2"))
+	items := make([]map[string]any, 0)
+	indices := make([]int, 0)
+	limiter := &testLimiter{limit: 1}
+	for i, item := range m.Iterator(context.Background(), db, nil, limiter) {
+		indices = append(indices, i)
+		items = append(items, item)
+	}
+	require.Len(t, items, 1)
+	require.Len(t, indices, 1)
+	require.Equal(t, []int{0}, indices)
+}
+
 func TestMapper_Extend(t *testing.T) {
 	m, err := NewMapper("a",
 		Mappings{"a": {Path: []string{"sub_obj"}}},
