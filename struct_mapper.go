@@ -52,25 +52,29 @@ type StructPostProcessor[T any] interface {
 type StructMapper[T any] interface {
 	// Rows reads all rows and maps them into a slice of `T`
 	//
-	// options can be any of Query, AddClause, StructPostProcessor[T], or Limiter
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter
 	Rows(ctx context.Context, db SqlInterface, args []any, options ...any) ([]T, error)
 	// Iterate iterates over the rows and calls the supplied handler with each row
 	//
 	// iteration stops at the end of rows - or an error is encountered - or the supplied handler returns false for `cont` (continue)
 	//
-	// options can be any of Query, AddClause, StructPostProcessor[T], or Limiter (ignored)
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	Iterate(ctx context.Context, db SqlInterface, args []any, handler func(row T) (cont bool, err error), options ...any) error
+	// Iterator return an iterator that can be ranged over
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter
+	Iterator(ctx context.Context, db SqlInterface, args []any, options ...any) func(func(int, T) bool)
 	// FirstRow reads just the first row and maps it into a `T`
 	//
 	// if there are no rows, returns nil
 	//
-	// options can be any of Query, AddClause, StructPostProcessor[T], or Limiter (ignored)
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (*T, error)
 	// ExactlyOneRow reads exactly one row and maps it into a `T`
 	//
 	// if there are no rows, returns error sql.ErrNoRows
 	//
-	// options can be any of Query, AddClause, StructPostProcessor[T], or Limiter (ignored)
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (T, error)
 }
 
@@ -86,6 +90,7 @@ type structMapper[T any] struct {
 	postProcessors         []StructPostProcessor[T]
 	useTagName             string
 	fieldColumnNamers      []FieldColumnNamer
+	errorTranslator        ErrorTranslator
 }
 
 // NewStructMapper creates a new struct mapper for reading structs from database rows
@@ -94,7 +99,10 @@ func NewStructMapper[T any](cols string, options ...any) (StructMapper[T], error
 	if reflect.TypeOf(zero).Kind() != reflect.Struct {
 		return nil, errors.New("StructMapper can only be used with struct types")
 	}
-	return (&structMapper[T]{cols: cols}).processInitialOptions(options)
+	return (&structMapper[T]{
+		cols:            cols,
+		errorTranslator: defaultErrorTranslator,
+	}).processInitialOptions(options)
 }
 
 // MustNewStructMapper is the same as NewStructMapper except that it panics on error
@@ -107,7 +115,7 @@ func MustNewStructMapper[T any](cols string, options ...any) StructMapper[T] {
 }
 
 func (m *structMapper[T]) Rows(ctx context.Context, db SqlInterface, args []any, options ...any) (result []T, err error) {
-	query, postProcessors, limiter, err := m.rowMapOptions(options)
+	query, postProcessors, limiter, errTranslator, err := m.rowMapOptions(options)
 	if err == nil {
 		var rows *sql.Rows
 		if rows, err = db.QueryContext(ctx, query, args...); err == nil {
@@ -116,7 +124,6 @@ func (m *structMapper[T]) Rows(ctx context.Context, db SqlInterface, args []any,
 			}()
 			var fieldPtrs func(*T) []any
 			if fieldPtrs, err = m.getFieldMappers(rows); err == nil {
-				var scanTargets []any
 				rowCount := 0
 				for err == nil && rows.Next() {
 					rowCount++
@@ -124,11 +131,10 @@ func (m *structMapper[T]) Rows(ctx context.Context, db SqlInterface, args []any,
 						break
 					}
 					var item T
-					scanTargets = fieldPtrs(&item)
-					if err = rows.Scan(scanTargets...); err == nil {
+					if err = rows.Scan(fieldPtrs(&item)...); err == nil {
 						for _, pp := range postProcessors {
 							if err = pp.PostProcess(ctx, db, &item); err != nil {
-								return nil, err
+								return nil, translateError(err, errTranslator)
 							}
 						}
 						result = append(result, item)
@@ -140,11 +146,11 @@ func (m *structMapper[T]) Rows(ctx context.Context, db SqlInterface, args []any,
 			}
 		}
 	}
-	return result, err
+	return result, translateError(err, errTranslator)
 }
 
 func (m *structMapper[T]) Iterate(ctx context.Context, db SqlInterface, args []any, handler func(row T) (cont bool, err error), options ...any) (err error) {
-	query, postProcessors, _, err := m.rowMapOptions(options)
+	query, postProcessors, _, errTranslator, err := m.rowMapOptions(options)
 	if err == nil {
 		var rows *sql.Rows
 		if rows, err = db.QueryContext(ctx, query, args...); err == nil {
@@ -153,15 +159,13 @@ func (m *structMapper[T]) Iterate(ctx context.Context, db SqlInterface, args []a
 			}()
 			var fieldPtrs func(*T) []any
 			if fieldPtrs, err = m.getFieldMappers(rows); err == nil {
-				var scanTargets []any
 				cont := true
 				for cont && err == nil && rows.Next() {
 					var item T
-					scanTargets = fieldPtrs(&item)
-					if err = rows.Scan(scanTargets...); err == nil {
+					if err = rows.Scan(fieldPtrs(&item)...); err == nil {
 						for _, pp := range postProcessors {
 							if err = pp.PostProcess(ctx, db, &item); err != nil {
-								return err
+								return translateError(err, errTranslator)
 							}
 						}
 						cont, err = handler(item)
@@ -173,11 +177,51 @@ func (m *structMapper[T]) Iterate(ctx context.Context, db SqlInterface, args []a
 			}
 		}
 	}
-	return err
+	return translateError(err, errTranslator)
+}
+
+func (m *structMapper[T]) Iterator(ctx context.Context, db SqlInterface, args []any, options ...any) func(func(int, T) bool) {
+	query, postProcessors, limiter, errTranslator, err := m.rowMapOptions(options)
+	if err == nil {
+		i := 0
+		var rows *sql.Rows
+		if rows, err = db.QueryContext(ctx, query, args...); err == nil {
+			return func(yield func(int, T) bool) {
+				var fieldPtrs func(*T) []any
+				if fieldPtrs, err = m.getFieldMappers(rows); err == nil {
+					for err == nil && rows.Next() {
+						if limiter.LimitReached(i + 1) {
+							break
+						}
+						var item T
+						if err = rows.Scan(fieldPtrs(&item)...); err == nil {
+							for _, pp := range postProcessors {
+								if err = pp.PostProcess(ctx, db, &item); err != nil {
+									break
+								}
+							}
+							if err == nil {
+								yield(i, item)
+							} else {
+								err = translateError(err, errTranslator)
+							}
+							i++
+						}
+					}
+				}
+				_ = rows.Close()
+				if err != nil {
+					_ = translateError(err, errTranslator)
+				}
+			}
+		}
+	}
+	_ = translateError(err, errTranslator)
+	return func(func(int, T) bool) {}
 }
 
 func (m *structMapper[T]) FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result *T, err error) {
-	query, postProcessors, _, err := m.rowMapOptions(options)
+	query, postProcessors, _, errTranslator, err := m.rowMapOptions(options)
 	if err == nil {
 		var rows *sql.Rows
 		if rows, err = sqli.QueryContext(ctx, query, args...); err == nil {
@@ -188,11 +232,10 @@ func (m *structMapper[T]) FirstRow(ctx context.Context, sqli SqlInterface, args 
 			if fieldPtrs, err = m.getFieldMappers(rows); err == nil {
 				if rows.Next() {
 					var item T
-					scanTargets := fieldPtrs(&item)
-					if err = rows.Scan(scanTargets...); err == nil {
+					if err = rows.Scan(fieldPtrs(&item)...); err == nil {
 						for _, pp := range postProcessors {
 							if err = pp.PostProcess(ctx, sqli, &item); err != nil {
-								return nil, err
+								return nil, translateError(err, errTranslator)
 							}
 						}
 						result = &item
@@ -201,11 +244,11 @@ func (m *structMapper[T]) FirstRow(ctx context.Context, sqli SqlInterface, args 
 			}
 		}
 	}
-	return result, err
+	return result, translateError(err, errTranslator)
 }
 
 func (m *structMapper[T]) ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (result T, err error) {
-	query, postProcessors, _, err := m.rowMapOptions(options)
+	query, postProcessors, _, errTranslator, err := m.rowMapOptions(options)
 	if err == nil {
 		var rows *sql.Rows
 		if rows, err = sqli.QueryContext(ctx, query, args...); err == nil {
@@ -215,11 +258,10 @@ func (m *structMapper[T]) ExactlyOneRow(ctx context.Context, sqli SqlInterface, 
 			var fieldPtrs func(*T) []any
 			if fieldPtrs, err = m.getFieldMappers(rows); err == nil {
 				if rows.Next() {
-					scanTargets := fieldPtrs(&result)
-					if err = rows.Scan(scanTargets...); err == nil {
+					if err = rows.Scan(fieldPtrs(&result)...); err == nil {
 						for _, pp := range postProcessors {
 							if err = pp.PostProcess(ctx, sqli, &result); err != nil {
-								return result, err
+								return result, translateError(err, errTranslator)
 							}
 						}
 					}
@@ -229,7 +271,7 @@ func (m *structMapper[T]) ExactlyOneRow(ctx context.Context, sqli SqlInterface, 
 			}
 		}
 	}
-	return result, err
+	return result, translateError(err, errTranslator)
 }
 
 func (m *structMapper[T]) processInitialOptions(options []any) (StructMapper[T], error) {
@@ -260,6 +302,8 @@ func (m *structMapper[T]) processInitialOptions(options []any) (StructMapper[T],
 				}
 			case FieldColumnNamer:
 				m.fieldColumnNamers = append(m.fieldColumnNamers, option)
+			case ErrorTranslator:
+				m.errorTranslator = option
 			default:
 				return nil, fmt.Errorf("unknown option type: %T", o)
 			}
@@ -272,10 +316,11 @@ func (m *structMapper[T]) processInitialOptions(options []any) (StructMapper[T],
 	return m, nil
 }
 
-func (m *structMapper[T]) rowMapOptions(options []any) (query string, postProcessors []StructPostProcessor[T], limiter Limiter, err error) {
+func (m *structMapper[T]) rowMapOptions(options []any) (query string, postProcessors []StructPostProcessor[T], limiter Limiter, errorTranslator ErrorTranslator, err error) {
 	querySet := false
 	postProcessors = append(postProcessors, m.postProcessors...)
 	limiter = defaultLimiter
+	errorTranslator = m.errorTranslator
 	var qb strings.Builder
 	if m.defaultQuery != nil {
 		querySet = true
@@ -301,6 +346,8 @@ func (m *structMapper[T]) rowMapOptions(options []any) (query string, postProces
 				postProcessors = append(postProcessors, option)
 			case Limiter:
 				limiter = option
+			case ErrorTranslator:
+				errorTranslator = option
 			default:
 				err = fmt.Errorf("unknown option type: %T", o)
 				return
@@ -310,7 +357,7 @@ func (m *structMapper[T]) rowMapOptions(options []any) (query string, postProces
 	if !querySet {
 		err = errors.New("no default query")
 	}
-	return qb.String(), postProcessors, limiter, err
+	return qb.String(), postProcessors, limiter, errorTranslator, err
 }
 
 func checkForgedColumns(query Query) error {

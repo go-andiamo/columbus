@@ -14,29 +14,47 @@ import (
 // Mapper is the main row mapper interface
 type Mapper interface {
 	// Rows reads all rows and maps them into a slice of `map[string]any`
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter
 	Rows(ctx context.Context, sqli SqlInterface, args []any, options ...any) ([]map[string]any, error)
 	// FirstRow reads just the first row and maps it into a `map[string]any`
 	//
 	// if there are no rows, returns nil
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	FirstRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error)
 	// ExactlyOneRow reads exactly one row and maps it into a `map[string]any`
 	//
 	// if there are no rows, returns error sql.ErrNoRows
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	ExactlyOneRow(ctx context.Context, sqli SqlInterface, args []any, options ...any) (map[string]any, error)
 	// WriteRows reads all rows and writes them as JSON to the supplied writer
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter
 	WriteRows(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
 	// WriteFirstRow reads just the first row and writes it as JSON to the supplied writer
 	//
 	// if there are no rows, nothing is written to the writer
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	WriteFirstRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
 	// WriteExactlyOneRow reads exactly one row and writes it as JSON to the supplied writer
 	//
 	// if there are no rows, returns error sql.ErrNoRows (and nothing is written to the writer)
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	WriteExactlyOneRow(ctx context.Context, writer io.Writer, sqli SqlInterface, args []any, options ...any) error
 	// Iterate iterates over the rows and calls the supplied handler with each row
 	//
 	// iteration stops at the end of rows - or an error is encountered - or the supplied handler returns false for `cont` (continue)
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter (ignored)
 	Iterate(ctx context.Context, sqli SqlInterface, args []any, handler func(row map[string]any) (cont bool, err error), options ...any) error
+	// Iterator return an iterator that can be ranged over
+	//
+	// options can be any of Query, AddClause, StructPostProcessor[T], ErrorTranslator or Limiter
+	Iterator(ctx context.Context, sqli SqlInterface, args []any, options ...any) func(func(int, map[string]any) bool)
 	// Extend creates a new Mapper adding the specified columns, mappings and options
 	Extend(addColumns []string, mappings Mappings, options ...any) (Mapper, error)
 }
@@ -124,7 +142,7 @@ func (m *mapper) Rows(ctx context.Context, sqli SqlInterface, args []any, option
 			if row, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
 				result = append(result, row)
 			} else {
-				return nil, err
+				return nil, translateError(err, errTranslator)
 			}
 		}
 	}
@@ -279,13 +297,46 @@ func (m *mapper) Iterate(ctx context.Context, sqli SqlInterface, args []any, han
 	if colsReader, err = m.mapColumns(rows, mappings); err == nil {
 		var row map[string]any
 		cont := true
-		for rows.Next() && cont && err == nil {
+		for cont && err == nil && rows.Next() {
 			if row, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
 				cont, err = handler(row)
 			}
 		}
 	}
 	return translateError(err, errTranslator)
+}
+
+func (m *mapper) Iterator(ctx context.Context, sqli SqlInterface, args []any, options ...any) func(func(int, map[string]any) bool) {
+	query, mappings, postProcesses, subQueries, exclusions, limiter, errTranslator, err := m.rowMapOptions(options...)
+	if err == nil {
+		i := 0
+		var rows *sql.Rows
+		if rows, err = sqli.QueryContext(ctx, query, args...); err == nil {
+			return func(yield func(int, map[string]any) bool) {
+				var colsReader *columnsReader
+				if colsReader, err = m.mapColumns(rows, mappings); err == nil {
+					var row map[string]any
+					for err == nil && rows.Next() {
+						if limiter.LimitReached(i + 1) {
+							break
+						}
+						if row, err = m.mapRow(ctx, sqli, rows, colsReader, mappings, postProcesses, subQueries, exclusions); err == nil {
+							yield(i, row)
+						} else {
+							err = translateError(err, errTranslator)
+						}
+						i++
+					}
+				}
+				_ = rows.Close()
+				if err != nil {
+					_ = translateError(err, errTranslator)
+				}
+			}
+		}
+	}
+	_ = translateError(err, errTranslator)
+	return func(func(int, map[string]any) bool) {}
 }
 
 func (m *mapper) Extend(addColumns []string, mappings Mappings, options ...any) (Mapper, error) {
