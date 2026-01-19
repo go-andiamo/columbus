@@ -66,14 +66,14 @@ type UseDecimals bool
 
 // NewMapper creates a new row mapper
 //
-// options can be any of: Mappings, Query, RowPostProcessor, SubQuery or UseDecimals
+// options can be any of: Mappings, Query, RowPostProcessor, SubQuery, UseDecimals or DbTypeScanners
 func NewMapper[T string | []string](columns T, options ...any) (Mapper, error) {
 	return newMapper(columns, options...)
 }
 
 // MustNewMapper is the same as NewMapper, except it panics on error
 //
-// options can be any of: Mappings, Query, RowPostProcessor, SubQuery or UseDecimals
+// options can be any of: Mappings, Query, RowPostProcessor, SubQuery, UseDecimals or DbTypeScanners
 func MustNewMapper[T string | []string](columns T, options ...any) Mapper {
 	m, err := NewMapper[T](columns, options...)
 	if err != nil {
@@ -87,6 +87,7 @@ func newMapper(cols any, options ...any) (*mapper, error) {
 		mappings:        Mappings{},
 		errorTranslator: defaultErrorTranslator,
 		useDecimals:     true,
+		dbTypeScanners:  defaultDbTypeScanners(),
 	}
 	switch ct := cols.(type) {
 	case string:
@@ -110,6 +111,7 @@ type mapper struct {
 	defaultQuery      *Query
 	useDecimals       bool
 	errorTranslator   ErrorTranslator
+	dbTypeScanners    DbTypeScanners
 	// subQuery is set by parent sub-query
 	subQuery internalSubQuery
 	subPath  []string
@@ -459,6 +461,10 @@ func (m *mapper) addOptions(options ...any) error {
 				for k, v := range option {
 					m.mappings[k] = v
 				}
+			case DbTypeScanners:
+				for k, v := range option {
+					m.dbTypeScanners[k] = v
+				}
 			default:
 				return fmt.Errorf("unknown option type: %T", o)
 			}
@@ -476,7 +482,7 @@ func (m *mapper) mapColumns(rows *sql.Rows, mappings Mappings) (cr *columnsReade
 	m.mutex.RUnlock()
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
-	m.columnsInfo, err = newColumnsInfo(rows, m.useDecimals, mappings)
+	m.columnsInfo, err = newColumnsInfo(rows, m.useDecimals, mappings, m.dbTypeScanners)
 	return m.columnsInfo.reader(), err
 }
 

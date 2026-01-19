@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"github.com/go-andiamo/columbus"
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -15,11 +18,21 @@ import (
 
 const testTable = `test_table`
 
-func TestPostgres(t *testing.T) {
-	db := createTestDatabase(cfg)
+var db *sql.DB
+var ctx = context.Background()
+
+func TestMain(m *testing.M) {
+	db = createTestDatabase(cfg)
 	defer func() {
 		_ = db.Close()
 	}()
+	code := m.Run()
+	os.Exit(code)
+}
+
+func TestPostgres(t *testing.T) {
+	_, err := db.Exec(`DELETE FROM ` + testTable)
+	require.NoError(t, err)
 	insert(db, map[string]any{
 		"col_a": nil,
 		"col_b": "bbb",
@@ -31,14 +44,29 @@ func TestPostgres(t *testing.T) {
 		"col_h": true,
 		"col_i": 16,
 		"col_j": 16.16,
+		"col_u": "216b5e48-5af9-4a05-800b-b5e264a74b7e",
 	})
 
 	const cols = `*`
-	mapper, err := columbus.NewMapper(cols, columbus.Mappings{"col_h": {Scanner: columbus.BoolColumn}}, columbus.Query(`FROM `+testTable))
+	scanners := columbus.DbTypeScanners{
+		"UUID": func(src any) (value any, err error) {
+			switch st := src.(type) {
+			case []byte:
+				return uuid.Parse(string(st))
+			case string:
+				return uuid.Parse(st)
+			}
+			return nil, fmt.Errorf("unexpected type %T", src)
+		},
+	}
+	mapper, err := columbus.NewMapper(cols,
+		//columbus.Mappings{"col_h": {Scanner: columbus.BoolColumn}},
+		columbus.Query(`FROM `+testTable),
+		scanners,
+	)
 	require.NoError(t, err)
 	require.NotNil(t, mapper)
 
-	ctx := context.Background()
 	row, err := mapper.FirstRow(ctx, db, nil)
 	require.NoError(t, err)
 	require.NotNil(t, row)
@@ -52,6 +80,8 @@ func TestPostgres(t *testing.T) {
 	require.Equal(t, true, row["col_h"])
 	require.Equal(t, int64(16), row["col_i"])
 	require.Equal(t, "16.16", row["col_j"].(decimal.Decimal).StringFixed(2))
+	require.IsType(t, uuid.UUID{}, row["col_u"])
+	require.Equal(t, "216b5e48-5af9-4a05-800b-b5e264a74b7e", row["col_u"].(uuid.UUID).String())
 
 	subq := columbus.NewSubQuery("sub", `SELECT * FROM `+testTable, nil, nil, false)
 	excf := func(property string, path []string) bool {
@@ -68,11 +98,68 @@ func TestPostgres(t *testing.T) {
 	require.NotEmpty(t, row["sub"])
 }
 
+func TestPostgres_StructMapping(t *testing.T) {
+	_, err := db.Exec(`DELETE FROM ` + testTable)
+	require.NoError(t, err)
+	insert(db, map[string]any{
+		"col_a": nil,
+		"col_b": "bbb",
+		"col_c": time.Now(),
+		"col_d": "TEXT",
+		//		"col_e": `{"foo":"bar"}`,
+		"col_e": nil,
+		"col_f": `[{"foo":"bar"}]`,
+		"col_g": 16.16,
+		"col_h": true,
+		"col_i": 16,
+		"col_j": 16.16,
+		"col_u": "216b5e48-5af9-4a05-800b-b5e264a74b7e",
+	})
+
+	type Row struct {
+		ColA sql.NullString      `sql:"col_a"`
+		ColB sql.NullString      `sql:"col_b"`
+		ColC sql.NullTime        `sql:"col_c"`
+		ColD sql.NullString      `sql:"col_d"`
+		ColE JsonCol             `sql:"col_e"`
+		ColF JsonCol             `sql:"col_f"`
+		ColG decimal.NullDecimal `sql:"col_g"`
+		ColH sql.NullBool        `sql:"col_h"`
+		ColI any                 `sql:"col_i"`
+		ColJ decimal.NullDecimal `sql:"col_j"`
+		ColK any                 `sql:"col_k"`
+		ColM any                 `sql:"col_m"`
+		ColN any                 `sql:"col_n"`
+		ColU uuid.UUID           `sql:"col_u"`
+	}
+	sm := columbus.MustNewStructMapper[Row]("*", columbus.Query(`FROM `+testTable))
+	row, err := sm.FirstRow(ctx, db, nil)
+	require.NoError(t, err)
+	require.NotNil(t, row)
+}
+
+type JsonCol struct {
+	Value any
+}
+
+func (j *JsonCol) Scan(src any) error {
+	if data, ok := src.([]byte); ok {
+		var v any
+		if err := json.Unmarshal(data, &v); err != nil {
+			return err
+		}
+		j.Value = v
+	} else if src != nil {
+		return fmt.Errorf("unexpected type %T", src)
+	}
+	return nil
+}
+
 var cfg = config{
 	Host:     "localhost",
-	Port:     52718,
-	Username: "admin",
-	Password: "1234",
+	Port:     5432,
+	Username: "root",
+	Password: "root",
 	Name:     "test_db",
 }
 
@@ -110,12 +197,13 @@ func createTestTable(db *sql.DB) {
     	col_e JSON,
     	col_f JSONB,
     	col_g DECIMAL(20,3),
-    	col_h BOOL,
+    	col_h BOOLEAN,
     	col_i INT,
     	col_j FLOAT,
     	col_k BIGINT,
     	col_m REAL,
-    	col_n BIT
+    	col_n BIT,
+    	col_u UUID
     )`, testTable))
 	if err != nil {
 		if pgErr, ok := err.(*pq.Error); ok {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,6 +78,16 @@ func TestNewMapper_WithOptions(t *testing.T) {
 	require.NoError(t, err)
 	mt = m.(*mapper)
 	require.Equal(t, et, mt.errorTranslator)
+
+	scanners := DbTypeScanners{
+		"UUID": func(src any) (any, error) {
+			return fmt.Sprintf("%v", src), nil
+		},
+	}
+	m, err = NewMapper("a,b,c", scanners)
+	require.NoError(t, err)
+	mt = m.(*mapper)
+	require.Len(t, mt.dbTypeScanners, 1)
 
 	_, err = NewMapper("a,b,c", "not a valid option")
 	require.Error(t, err)
