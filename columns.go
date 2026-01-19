@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/shopspring/decimal"
+	"maps"
 	"reflect"
 	"strconv"
 	"strings"
@@ -12,6 +13,23 @@ import (
 
 // ColumnScanner is a func that can be used by Mapping to read the value of a column
 type ColumnScanner func(src any) (value any, err error)
+
+// DbTypeScanners is a map of column type scanners that can be used as an option for NewMapper / MustNewMapper
+//
+// the key is the database native column type (e.g. "JSON", "JSONB", "UUID" etc.) and the value is a func that performs the scan
+type DbTypeScanners map[string]ColumnScanner
+
+// DefaultDbTypeScanners is the global default DbTypeScanners used by mappers
+//
+// Each new mapper uses these, but keys can be overridden by passing a DbTypeScanners as an option to NewMapper / MustNewMapper
+var DefaultDbTypeScanners DbTypeScanners = nil
+
+func defaultDbTypeScanners() (result DbTypeScanners) {
+	if result = maps.Clone(DefaultDbTypeScanners); result == nil {
+		result = make(DbTypeScanners)
+	}
+	return result
+}
 
 // BoolColumn is a ColumnScanner that can be used by Mapping.Scanner to convert a column to a boolean property
 //
@@ -35,12 +53,13 @@ func BoolColumn(src any) (any, error) {
 }
 
 type columnsInfo struct {
-	count       int
-	names       []string
-	scanTypes   []reflect.Type
-	dbTypes     []string
-	mappings    Mappings
-	useDecimals bool
+	count          int
+	names          []string
+	scanTypes      []reflect.Type
+	dbTypes        []string
+	mappings       Mappings
+	useDecimals    bool
+	dbTypeScanners DbTypeScanners
 }
 
 type columnsReader struct {
@@ -50,17 +69,18 @@ type columnsReader struct {
 	scanArgs []any
 }
 
-func newColumnsInfo(rows *sql.Rows, useDecimals bool, mappings Mappings) (result *columnsInfo, err error) {
+func newColumnsInfo(rows *sql.Rows, useDecimals bool, mappings Mappings, scanners DbTypeScanners) (result *columnsInfo, err error) {
 	var cts []*sql.ColumnType
 	if cts, err = rows.ColumnTypes(); err == nil {
 		count := len(cts)
 		result = &columnsInfo{
-			count:       count,
-			names:       make([]string, count),
-			scanTypes:   make([]reflect.Type, count),
-			dbTypes:     make([]string, count),
-			mappings:    mappings,
-			useDecimals: useDecimals,
+			count:          count,
+			names:          make([]string, count),
+			scanTypes:      make([]reflect.Type, count),
+			dbTypes:        make([]string, count),
+			mappings:       mappings,
+			useDecimals:    useDecimals,
+			dbTypeScanners: scanners,
 		}
 		for i, ct := range cts {
 			result.names[i] = ct.Name()
@@ -90,6 +110,12 @@ func (ci *columnsInfo) buildScanner(cr *columnsReader, index int) sql.Scanner {
 			columns: cr,
 			index:   index,
 			scanner: m.Scanner,
+		}
+	} else if st, ok := ci.dbTypeScanners[ci.dbTypes[index]]; ok && st != nil {
+		return &customColumnScanner{
+			columns: cr,
+			index:   index,
+			scanner: st,
 		}
 	}
 	switch ci.dbTypes[index] {
