@@ -1,10 +1,13 @@
 package columbus
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"
+	"strings"
 	"testing"
 )
 
@@ -18,7 +21,22 @@ func TestNewSubQuery_Execute(t *testing.T) {
 	sq := NewSubQuery("test",
 		`SELECT * FROM test_table WHERE id = ?`,
 		[]string{"parent_id"},
-		nil, false)
+		Mappings{
+			"id": {},
+		}, false,
+		DbTypeScanners{
+			"UUID": func(src any) (value any, err error) {
+				// this won't actually be used
+				panic("should not happen")
+			},
+		},
+		Mappings{
+			"id": {
+				PostProcess: func(ctx context.Context, sqli SqlInterface, row map[string]any, value any) (replace bool, replaceValue any, err error) {
+					return true, strings.ToUpper(fmt.Sprintf("%v", value)), nil
+				},
+			},
+		})
 	row := map[string]any{
 		"parent_id": int64(16),
 	}
@@ -26,8 +44,15 @@ func TestNewSubQuery_Execute(t *testing.T) {
 	err = sq.Execute(ctx, db, row, nil)
 	require.NoError(t, err)
 	require.NotNil(t, row["test"])
-	require.Equal(t, 1, len(row["test"].([]map[string]any)))
+	require.IsType(t, []map[string]any{}, row["test"])
+	testPty := row["test"].([]map[string]any)
+	require.Equal(t, 1, len(testPty))
+	require.Equal(t, "NAME", testPty[0]["id"])
 	require.NoError(t, mock.ExpectationsWereMet())
+
+	raw := sq.(*sliceSubQuery)
+	require.Len(t, raw.mapper.dbTypeScanners, 1)
+	require.Len(t, raw.mapper.mappings, 1)
 }
 
 func TestNewSubQuery_Execute_Twice(t *testing.T) {

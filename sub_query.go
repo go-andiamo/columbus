@@ -29,24 +29,26 @@ type internalSubQuery interface {
 }
 
 // NewSubQuery creates a new sub-query that creates an array property in the mapped row
-func NewSubQuery(propertyName string, query string, argColumns []string, mappings Mappings, emptyNil bool) SubQuery {
+func NewSubQuery(propertyName string, query string, argColumns []string, mappings Mappings, emptyNil bool, options ...any) SubQuery {
 	return &sliceSubQuery{subQuery{
 		propertyName: propertyName,
 		query:        query,
 		argColumns:   argColumns,
 		mappings:     mappings,
 		emptyNil:     emptyNil,
+		options:      subQueryOptions(options...),
 	}}
 }
 
 // NewObjectSubQuery creates a new sub-query that creates an object property in the mapped row
-func NewObjectSubQuery(propertyName string, query string, argColumns []string, mappings Mappings, emptyNil bool, errNoRow bool) SubQuery {
+func NewObjectSubQuery(propertyName string, query string, argColumns []string, mappings Mappings, emptyNil bool, errNoRow bool, options ...any) SubQuery {
 	if errNoRow {
 		return &exactObjectSubQuery{subQuery{
 			propertyName: propertyName,
 			query:        query,
 			argColumns:   argColumns,
 			mappings:     mappings,
+			options:      subQueryOptions(options...),
 		}}
 	}
 	return &objectSubQuery{subQuery{
@@ -55,19 +57,32 @@ func NewObjectSubQuery(propertyName string, query string, argColumns []string, m
 		argColumns:   argColumns,
 		mappings:     mappings,
 		emptyNil:     emptyNil,
+		options:      subQueryOptions(options...),
 	}}
 }
 
 // NewMergeSubQuery creates a new sub-query that reads an object for the mapped row and merges the properties from
 // that object into the mapped row
-func NewMergeSubQuery(query string, argColumns []string, mappings Mappings, noOverwrite bool) SubQuery {
+func NewMergeSubQuery(query string, argColumns []string, mappings Mappings, noOverwrite bool, options ...any) SubQuery {
 	return &mergeSubQuery{
 		noOverwrite: noOverwrite,
 		subQuery: subQuery{
 			query:      query,
 			argColumns: argColumns,
 			mappings:   mappings,
+			options:    subQueryOptions(options...),
 		}}
+}
+
+func subQueryOptions(options ...any) []any {
+	result := make([]any, 0, len(options))
+	for _, o := range options {
+		switch o.(type) {
+		case RowPostProcessor, SubQuery, UseDecimals, ErrorTranslator, Mappings, DbTypeScanners:
+			result = append(result, o)
+		}
+	}
+	return result
 }
 
 type subQuery struct {
@@ -75,7 +90,7 @@ type subQuery struct {
 	mapper *mapper
 	// propertyName is the property name to use in the row object
 	propertyName string
-	// query is the SQL query to use - it should contain the same number of '?' arg markers as the length of argColumns
+	// query is the SQL query to use - it should contain the same number of '?'/'$n' arg markers as the length of argColumns
 	query string
 	// argColumns is the columns to use as args for the sub-query
 	argColumns []string
@@ -83,6 +98,8 @@ type subQuery struct {
 	emptyNil bool
 	// mappings is any column mappings used by the sub-query
 	mappings Mappings
+	// options is used by mapper
+	options []any
 }
 
 func (sq *subQuery) getQuery() string {
@@ -207,7 +224,8 @@ func (sq *subQuery) rowMapper(asq internalSubQuery) *mapper {
 	sq.mutex.RUnlock()
 	sq.mutex.Lock()
 	defer sq.mutex.Unlock()
-	sq.mapper, _ = newMapper(nil, sq.mappings)
+	opts := append([]any{sq.mappings}, sq.options...)
+	sq.mapper, _ = newMapper(nil, opts...)
 	sq.mapper.subQuery = asq
 	if sq.propertyName != "" {
 		sq.mapper.subPath = []string{sq.propertyName}
